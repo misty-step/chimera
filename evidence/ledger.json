@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "requirementId": "M1-1",
+      "intent": "folio:7f50448c688da1ffcd94e38b975abe9d8e388bf3bbb949309353ce78438d6047",
+      "intentRange": "82c04f261d68123e45493d550ce663f93f761fe4..4dc031deec83feef04d9c45dbf76ec46ccb6d25d",
+      "verifiedSha": "ee80089da549d34ada0195b7bca4098cd42cf8ca",
+      "verifiedAt": "2026-11-26T19:58:20Z",
+      "criticVerdict": "PENDING",
+      "summary": "chimera version/lint tenant-leak/ring0 lock|verify built from the verified SHA and exercised in a real terminal; 28 TestM1_1_* tests pass under -race.",
+      "evidence": [
+        { "localPath": "media/cli-walkthrough.mp4", "artifactUrl": null, "mediaType": "video/mp4" },
+        { "localPath": "media/cli-walkthrough.txt", "artifactUrl": null, "mediaType": "text/plain" },
+        { "localPath": "media/cli-walkthrough-final.png", "artifactUrl": null, "mediaType": "image/png" },
+        { "localPath": "media/go-test.txt", "artifactUrl": null, "mediaType": "text/plain" }
+      ]
+    },
+    {
+      "requirementId": "folio/assets/trail-reference",
+      "intent": "folio:7f50448c688da1ffcd94e38b975abe9d8e388bf3bbb949309353ce78438d6047",
+      "intentRange": "82c04f261d68123e45493d550ce663f93f761fe4..4dc031deec83feef04d9c45dbf76ec46ccb6d25d",
+      "verifiedSha": "ee80089da549d34ada0195b7bca4098cd42cf8ca",
+      "verifiedAt": "2026-11-26T19:58:20Z",
+      "criticVerdict": "PENDING",
+      "summary": "Locked favicon.svg (sha256 dc98e47e34fa87a7856088769013bd5a3ec2a631fbece9190cb8d6e7e165d7d5) and media/capsule-write.svg (sha256 a778295fb943d0e0ca073862e67fad39b140a1c0ac84e49993316b85234ba289) unchanged and served byte-identical; reference Trail page passes headed Chrome checks at 1440x900 and 390x844.",
+      "evidence": [
+        { "localPath": "media/trail-desktop.webm", "artifactUrl": null, "mediaType": "video/webm" },
+        { "localPath": "media/trail-mobile.webm", "artifactUrl": null, "mediaType": "video/webm" },
+        { "localPath": "media/trail-browser-report.json", "artifactUrl": null, "mediaType": "application/json" },
+        { "localPath": "media/trail-desktop-01-top.png", "artifactUrl": null, "mediaType": "image/png" },
+        { "localPath": "media/trail-mobile-01-top.png", "artifactUrl": null, "mediaType": "image/png" }
+      ]
+    }
+  ]
+}
