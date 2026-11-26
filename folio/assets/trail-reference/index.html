@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'">
+<title>chimera / trail — acme/widget a52d8f9f2851..ecf2a592944f</title>
+<link rel="stylesheet" href="trail.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<header class="masthead">
+  <p class="wordmark">chimera / trail</p>
+  <h1>acme/widget <span class="mono">a52d8f9f2851..ecf2a592944f</span></h1>
+  <dl class="facts">
+    <div><dt>Intent</dt><dd class="mono">folio:b89a5f9dd603</dd></div>
+    <div><dt>Risk class</dt><dd><span class="risk risk-high">R2</span></dd></div>
+    <div><dt>Open risk</dt><dd class="num">1</dd></div>
+    <div><dt>Unmet intent</dt><dd class="num">1</dd></div>
+    <div><dt>Missing proof</dt><dd class="num">1</dd></div>
+    <div><dt>Verdicts</dt><dd class="num">5 <span class="muted">(4 pass, 1 fail)</span></dd></div>
+  </dl>
+</header>
+
+<div class="layout">
+<nav class="index" aria-label="Sections">
+  <ol>
+    <li><a href="#risk">Open risk <span class="num">1</span></a></li>
+    <li><a href="#unmet">Unmet intent <span class="num">1</span></a></li>
+    <li><a href="#missing">Missing proof <span class="num">1</span></a></li>
+    <li><a href="#verdicts">Verdicts <span class="num">5</span></a></li>
+    <li><a href="#media">Media <span class="num">1</span></a></li>
+    <li><a href="#commits">Commits <span class="num">3</span></a></li>
+  </ol>
+</nav>
+
+<main>
+<section id="risk" aria-labelledby="risk-h">
+  <h2 id="risk-h">Open risk</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">Class</th><th scope="col">Path</th><th scope="col">Reason</th><th scope="col">Source</th></tr></thead>
+    <tbody>
+      <tr class="fail"><td><span class="risk risk-high">R2</span></td><td class="mono">pkg/<wbr>objstore/<wbr>sigv4.go</td><td>Signing path changed; 3 packages depend on it</td><td><a href="#t-c2-41">Transcript line 41</a></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="unmet" aria-labelledby="unmet-h">
+  <h2 id="unmet-h">Unmet intent</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">ID</th><th scope="col">Criterion</th><th scope="col">State</th></tr></thead>
+    <tbody>
+      <tr class="fail"><td class="mono">[M1-2]</td><td>A fake that corrupts a stored member makes <code>get</code> fail</td><td><span class="state">FAIL</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="missing" aria-labelledby="missing-h">
+  <h2 id="missing-h">Missing proof</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">Commit</th><th scope="col">Subject</th><th scope="col">Missing</th></tr></thead>
+    <tbody>
+      <tr class="fail"><td class="mono"><a href="#c-f44bf9640d67">f44bf9640d67</a></td><td>docs: fix typo in capsule help</td><td>Chimera-Intent, Chimera-Capsule</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="verdicts" aria-labelledby="verdicts-h">
+  <h2 id="verdicts-h">Verdicts</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">ID</th><th scope="col">Criterion</th><th scope="col">State</th><th scope="col">Evidence</th></tr></thead>
+    <tbody>
+      <tr class="fail"><td class="mono">[M1-2]</td><td>Corrupted member makes <code>get</code> fail</td><td><span class="state">FAIL</span></td><td><a href="#t-c2-88">Transcript line 88</a></td></tr>
+      <tr><td class="mono">[M1-2]</td><td>Two concurrent pushes write once</td><td><span class="state">PASS</span></td><td><a href="#t-c2-63">Transcript line 63</a></td></tr>
+      <tr><td class="mono">[M1-2]</td><td>Secret in transcript aborts before any request</td><td><span class="state">PASS</span></td><td><a href="#t-c2-70">Transcript line 70</a></td></tr>
+      <tr><td class="mono">[M1-1]</td><td>Lint output never contains the matched term</td><td><span class="state">PASS</span></td><td><a href="#t-c1-12">Transcript line 12</a></td></tr>
+      <tr><td class="mono">[M1-1]</td><td>Unreadable denylist fails closed</td><td><span class="state">PASS</span></td><td><a href="#t-c1-19">Transcript line 19</a></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="media" aria-labelledby="media-h">
+  <h2 id="media-h">Media</h2>
+  <figure>
+    <img src="media/capsule-write.svg" width="720" height="200" alt="Capsule write protocol: secret gate, members, capsule.json last, readback">
+    <figcaption><span class="mono">capsule-write.svg</span> · <span class="mono">[M1-2]</span></figcaption>
+  </figure>
+</section>
+
+<section id="commits" aria-labelledby="commits-h">
+  <h2 id="commits-h">Commits</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">Commit</th><th scope="col">Subject</th><th scope="col">Capsule</th><th scope="col">Intent</th></tr></thead>
+    <tbody>
+      <tr id="c-79dea158d058"><td class="mono">79dea158d058</td><td>lint: add tenant-leak scanner</td><td class="mono"><a href="#cap-bd960c743e45">bd960c743e45</a></td><td class="mono">folio:b89a5f9dd603</td></tr>
+      <tr id="c-4db3da601999"><td class="mono">4db3da601999</td><td>capsule: write-once push with readback</td><td class="mono"><a href="#cap-70884302727c">70884302727c</a></td><td class="mono">folio:b89a5f9dd603</td></tr>
+      <tr id="c-f44bf9640d67" class="fail"><td class="mono">f44bf9640d67</td><td>docs: fix typo in capsule help</td><td class="mono">—</td><td class="mono">—</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <details id="cap-bd960c743e45">
+    <summary><span class="mono">sha256:bd960c743e45</span> · lane local · example-model · effort high · context push</summary>
+    <ol class="transcript">
+      <li id="t-c1-12"><a href="#t-c1-12" class="ln">12</a><code>$ go test ./pkg/lint -run TestM1_1_OutputOmitsTerm</code></li>
+      <li id="t-c1-13"><a href="#t-c1-13" class="ln">13</a><code>ok   pkg/lint  0.41s</code></li>
+      <li id="t-c1-19"><a href="#t-c1-19" class="ln">19</a><code>$ go test ./pkg/lint -run TestM1_1_UnreadableDenylist</code></li>
+      <li id="t-c1-20"><a href="#t-c1-20" class="ln">20</a><code>ok   pkg/lint  0.07s</code></li>
+    </ol>
+  </details>
+  <details id="cap-70884302727c">
+    <summary><span class="mono">sha256:70884302727c</span> · lane local · example-model · effort high · context push</summary>
+    <ol class="transcript">
+      <li id="t-c2-41"><a href="#t-c2-41" class="ln">41</a><code>edit pkg/objstore/sigv4.go (+38 −11)</code></li>
+      <li id="t-c2-63"><a href="#t-c2-63" class="ln">63</a><code>--- PASS: TestM1_2_PutIsWriteOnce (0.12s)</code></li>
+      <li id="t-c2-70"><a href="#t-c2-70" class="ln">70</a><code>--- PASS: TestM1_2_SecretAbortsBeforeRequest (0.02s)</code></li>
+      <li id="t-c2-88"><a href="#t-c2-88" class="ln">88</a><code>--- FAIL: TestM1_2_CorruptMemberFailsGet (0.03s): get returned nil error</code></li>
+    </ol>
+  </details>
+</section>
+</main>
+</div>
+
+<footer class="colophon">
+  <p class="mono">Reference rendering · fictional fixture data · DESIGN.md §2</p>
+</footer>
+</body>
+</html>
