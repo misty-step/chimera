@@ -4,8 +4,13 @@ Intent-driven runtime for autonomous coding agents. Every change starts from an 
 **Lane**, and leaves an immutable **Capsule** of evidence that Git commits point to by trailer. The same engine
 runs production work (`K=1`) and replay evaluations (`K=n`).
 
-> **Status:** specification only. The Go implementation is compiled from the Active Folio below. Nothing here is
-> runnable yet; Milestone 1 is the first build target.
+> **Status:** Milestone 1 in progress. The Go implementation is compiled from the Active Folio below.
+> `[M1-1]` is implemented: the CLI skeleton (`--json`, exit codes `0/1/2/3`, no ANSI off a TTY),
+> `chimera lint tenant-leak`, `chimera ring0 lock|verify`, and `chimera version`. `[M1-2]`–`[M1-4]` are not yet.
+>
+> ```sh
+> go build -o chimera ./cmd/chimera && ./chimera --help
+> ```
 
 ## Active Folio
 
