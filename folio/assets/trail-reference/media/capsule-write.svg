@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 200" width="720" height="200" font-family="IBM Plex Mono, ui-monospace, monospace" font-size="13">
+  <rect width="720" height="200" fill="#F6F5F2"/>
+  <g fill="none" stroke="#16171A" stroke-width="1">
+    <rect x="20" y="70" width="140" height="60"/>
+    <rect x="200" y="70" width="140" height="60"/>
+    <rect x="380" y="70" width="140" height="60"/>
+    <rect x="560" y="70" width="140" height="60" stroke="#1F45C8" stroke-width="2"/>
+    <path d="M160 100h40M340 100h40M520 100h40"/>
+  </g>
+  <g fill="#16171A" text-anchor="middle">
+    <text x="90" y="96">secret gate</text><text x="90" y="114" fill="#5B5E66">fail closed</text>
+    <text x="270" y="96">PUT members</text><text x="270" y="114" fill="#5B5E66">If-None-Match: *</text>
+    <text x="450" y="96">PUT capsule.json</text><text x="450" y="114" fill="#5B5E66">commit point</text>
+    <text x="630" y="96" fill="#1F45C8">GET + sha256</text><text x="630" y="114" fill="#5B5E66">readback</text>
+  </g>
+  <text x="20" y="40" fill="#5B5E66">cas/sha256-&lt;hex&gt;/ · write protocol</text>
+</svg>
