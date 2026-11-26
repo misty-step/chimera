@@ -385,21 +385,29 @@ func (c *ctx) fail(command string, err error) int {
 	}
 	line = strings.ReplaceAll(line, "\n", " ")
 	if c.json {
-		obj := map[string]any{
-			"schema":  "chimera.error/v1",
-			"code":    ce.code,
-			"command": command,
-			"message": strings.TrimPrefix(line, "chimera: "),
-		}
 		findings := ce.findings
 		if findings == nil {
 			findings = []any{}
 		}
-		obj["findings"] = findings
-		_ = c.emitJSON(obj)
+		_ = c.emitJSON(errorJSON{
+			Schema:   "chimera.error/v1",
+			Code:     ce.code,
+			Command:  command,
+			Message:  strings.TrimPrefix(line, "chimera: "),
+			Findings: findings,
+		})
 	}
 	fmt.Fprintln(c.inv.Stderr, line)
 	return ce.code
+}
+
+// errorJSON is the chimera.error/v1 object written to stdout under --json.
+type errorJSON struct {
+	Schema   string `json:"schema"`
+	Code     int    `json:"code"`
+	Command  string `json:"command"`
+	Message  string `json:"message"`
+	Findings any    `json:"findings"`
 }
 
 func lower(s string) string {
