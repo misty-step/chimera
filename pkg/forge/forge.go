@@ -52,15 +52,19 @@ var ErrStale = errors.New("stale ref")
 // ErrNotFound is returned by Head for a ref that does not exist.
 var ErrNotFound = errors.New("ref not found")
 
+// ErrUnavailable marks a call whose outcome is unknown: the forge did not
+// answer, or answered with a transient status. The call may be retried.
+var ErrUnavailable = errors.New("forge unavailable")
+
 // Change is one queued change: a commit on an owning branch that asks to
 // land on a target.
 type Change struct {
-	ID     string // "<seq>/<branch>": unique within the target's queue
-	Ref    string // the queue ref holding the change; "" for a change that is not queued
-	Seq    int    // queue position key; lower lands first
-	Branch string // owning branch (short name)
-	Head   SHA    // the commit queued to land
-	Target string // ref the change lands on (short name)
+	ID     string `json:"id"`     // "<seq>/<branch>": unique within the target's queue
+	Ref    string `json:"ref"`    // the queue ref holding the change; "" for a change that is not queued
+	Seq    int    `json:"seq"`    // queue position key; lower lands first
+	Branch string `json:"branch"` // owning branch (short name)
+	Head   SHA    `json:"head"`   // the commit queued to land
+	Target string `json:"target"` // ref the change lands on (short name)
 }
 
 // State is the outcome a Check reports. It is always a word (DESIGN.md §1.4).
@@ -74,11 +78,11 @@ const (
 
 // Check is a named verdict attached to a commit on the forge.
 type Check struct {
-	Name    string // e.g. "chimera/land"
-	State   State
-	Title   string // one line
-	Summary string // a few lines; never a secret, never a score
-	URL     string // where the evidence is; may be empty
+	Name    string `json:"name"` // e.g. "chimera/land"
+	State   State  `json:"state"`
+	Title   string `json:"title"`   // one line
+	Summary string `json:"summary"` // a few lines; never a secret, never a score
+	URL     string `json:"url"`     // where the evidence is; may be empty
 }
 
 // Forge is the entire forge surface.

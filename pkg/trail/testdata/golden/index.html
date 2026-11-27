@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'">
+<title>chimera / trail — acme/widget 8c7f55209158..5d3aeef7156a</title>
+<link rel="stylesheet" href="trail.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<header class="masthead">
+  <p class="wordmark">chimera / trail</p>
+  <h1>acme/widget <span class="mono">8c7f55209158..5d3aeef7156a</span></h1>
+  <dl class="facts">
+    <div><dt>Intent</dt><dd class="mono">folio:22efb2686cce</dd></div>
+    <div><dt>Risk class</dt><dd><span class="risk risk-high">R3</span></dd></div>
+    <div><dt>Open risk</dt><dd class="num">4</dd></div>
+    <div><dt>Unmet intent</dt><dd class="num">2</dd></div>
+    <div><dt>Missing proof</dt><dd class="num">1</dd></div>
+    <div><dt>Verdicts</dt><dd class="num">6 <span class="muted">(4 pass, 1 fail, 1 stale)</span></dd></div>
+  </dl>
+</header>
+
+<div class="layout">
+<nav class="index" aria-label="Sections">
+  <ol>
+    <li><a href="#risk">Open risk <span class="num">4</span></a></li>
+    <li><a href="#unmet">Unmet intent <span class="num">2</span></a></li>
+    <li><a href="#missing">Missing proof <span class="num">1</span></a></li>
+    <li><a href="#verdicts">Verdicts <span class="num">6</span></a></li>
+    <li><a href="#media">Media <span class="num">3</span></a></li>
+    <li><a href="#commits">Commits <span class="num">4</span></a></li>
+  </ol>
+</nav>
+
+<main>
+<section id="risk" aria-labelledby="risk-h">
+  <h2 id="risk-h">Open risk</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">Class</th><th scope="col">Path</th><th scope="col">Reason</th><th scope="col">Source</th></tr></thead>
+    <tbody>
+      <tr class="fail"><td><span class="risk risk-high">R3</span></td><td class="mono">verify/<wbr>check.sh</td><td>Ring-0 path changed</td><td><a href="#cap-6f8c67fe110b">Capsule 6f8c67fe110b</a></td></tr>
+      <tr class="fail"><td><span class="risk risk-high">R2</span></td><td class="mono">pkg/<wbr>objstore/<wbr>sigv4.go</td><td>matches risk glob pkg/objstore/**</td><td><a href="#t-6265c6144995-2">Transcript 6265c6144995 line 2</a></td></tr>
+      <tr class="fail"><td><span class="risk risk-high">R2</span></td><td class="mono">—</td><td>wide change: 4 files, 4 packages, 10 lines</td><td><a href="#cap-6f8c67fe110b">Capsule 6f8c67fe110b</a></td></tr>
+      <tr class="fail"><td>—</td><td class="mono">—</td><td>orphan proof: [X-9] is not in intent folio:22efb2686cce</td><td><a href="#t-6265c6144995-6">Transcript 6265c6144995 line 6</a></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="unmet" aria-labelledby="unmet-h">
+  <h2 id="unmet-h">Unmet intent</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">ID</th><th scope="col">Criterion</th><th scope="col">State</th></tr></thead>
+    <tbody>
+      <tr class="fail"><td class="mono">[W-2]</td><td>Corrupted member makes get fail</td><td><span class="state">FAIL</span></td></tr>
+      <tr class="fail"><td class="mono">[W-3]</td><td>no verdict in this range</td><td><span class="state">PENDING</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="missing" aria-labelledby="missing-h">
+  <h2 id="missing-h">Missing proof</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">Commit</th><th scope="col">Subject</th><th scope="col">Missing</th></tr></thead>
+    <tbody>
+      <tr class="fail"><td class="mono"><a href="#c-f31bb3843c87">f31bb3843c87</a></td><td>docs: fix typo in push help</td><td>Chimera-Intent, Chimera-Capsule</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="verdicts" aria-labelledby="verdicts-h">
+  <h2 id="verdicts-h">Verdicts</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">ID</th><th scope="col">Criterion</th><th scope="col">State</th><th scope="col">Evidence</th></tr></thead>
+    <tbody>
+      <tr class="fail"><td class="mono">[W-2]</td><td>Corrupted member makes get fail</td><td><span class="state">FAIL</span></td><td><a href="#t-6265c6144995-5">Transcript 6265c6144995 line 5</a></td></tr>
+      <tr class="fail"><td class="mono">[X-9]</td><td>Legacy export still works</td><td><span class="state">STALE</span></td><td><a href="#t-6265c6144995-6">Transcript 6265c6144995 line 6</a></td></tr>
+      <tr><td class="mono">[W-1]</td><td>Lint output never contains the matched term</td><td><span class="state">PASS</span></td><td><a href="#t-21dd404b9452-3">Transcript 21dd404b9452 line 3</a></td></tr>
+      <tr><td class="mono">[W-1]</td><td>Unreadable denylist fails closed</td><td><span class="state">PASS</span></td><td><a href="#t-21dd404b9452-5">Transcript 21dd404b9452 line 5</a></td></tr>
+      <tr><td class="mono">[W-2]</td><td>Two concurrent pushes write once</td><td><span class="state">PASS</span></td><td><a href="#t-6265c6144995-4">Transcript 6265c6144995 line 4</a></td></tr>
+      <tr><td class="mono">verifier</td><td>verifier exits 0</td><td><span class="state">PASS</span></td><td><a href="#t-6f8c67fe110b-4">Transcript 6f8c67fe110b line 4</a></td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="media" aria-labelledby="media-h">
+  <h2 id="media-h">Media</h2>
+  <figure>
+    <img src="media/21dd404b9452-capsule-write.svg" width="720" height="200" alt="Proof capsule-write.svg from capsule 21dd404b9452">
+    <figcaption><span class="mono">capsule-write.svg</span> · <span class="mono">[W-1]</span></figcaption>
+  </figure>
+  <figure>
+    <img src="media/21dd404b9452-w-1-lint.png" width="320" height="180" alt="Proof w-1-lint.png from capsule 21dd404b9452">
+    <figcaption><span class="mono">w-1-lint.png</span> · <span class="mono">[W-1]</span></figcaption>
+  </figure>
+  <figure>
+    <video controls preload="metadata" width="640" height="360" src="media/6265c6144995-w-2-push.mp4" aria-label="Proof w-2-push.mp4 from capsule 6265c6144995"></video>
+    <figcaption><span class="mono">w-2-push.mp4</span> · <span class="mono">[W-2]</span></figcaption>
+  </figure>
+</section>
+
+<section id="commits" aria-labelledby="commits-h">
+  <h2 id="commits-h">Commits</h2>
+  <div class="scroll">
+  <table>
+    <thead><tr><th scope="col">Commit</th><th scope="col">Subject</th><th scope="col">Capsule</th><th scope="col">Intent</th></tr></thead>
+    <tbody>
+      <tr id="c-c36f7efafb3b"><td class="mono">c36f7efafb3b</td><td>lint: add tenant-leak scanner</td><td class="mono"><a href="#cap-21dd404b9452">21dd404b9452</a></td><td class="mono">folio:22efb2686cce</td></tr>
+      <tr id="c-9b33a4fc52e8"><td class="mono">9b33a4fc52e8</td><td>capsule: write-once push with readback</td><td class="mono"><a href="#cap-6265c6144995">6265c6144995</a></td><td class="mono">folio:22efb2686cce</td></tr>
+      <tr id="c-f31bb3843c87" class="fail"><td class="mono">f31bb3843c87</td><td>docs: fix typo in push help</td><td class="mono">—</td><td class="mono">—</td></tr>
+      <tr id="c-5d3aeef7156a"><td class="mono">5d3aeef7156a</td><td>verify: run vet before the tests</td><td class="mono"><a href="#cap-6f8c67fe110b">6f8c67fe110b</a></td><td class="mono">folio:22efb2686cce</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <details id="cap-21dd404b9452">
+    <summary><span class="mono">sha256:21dd404b9452</span> · lane local · example-model · example-agent · effort high · context push</summary>
+    <ol class="transcript">
+      <li id="t-21dd404b9452-1"><a href="#t-21dd404b9452-1" class="ln">1</a><code>start ckpt_01ARZ3NDEKTSV4RRFFQ69G5F01 base 8c7f55209158 tree 4b825dc642cb</code></li>
+      <li id="t-21dd404b9452-2"><a href="#t-21dd404b9452-2" class="ln">2</a><code>$ go test ./pkg/lint</code></li>
+      <li id="t-21dd404b9452-3"><a href="#t-21dd404b9452-3" class="ln">3</a><code>ok   pkg/lint  0.41s</code></li>
+      <li id="t-21dd404b9452-4"><a href="#t-21dd404b9452-4" class="ln">4</a><code>[W-1] PASS Lint output never contains the matched term</code></li>
+      <li id="t-21dd404b9452-5"><a href="#t-21dd404b9452-5" class="ln">5</a><code>[W-1] PASS Unreadable denylist fails closed</code></li>
+      <li id="t-21dd404b9452-6"><a href="#t-21dd404b9452-6" class="ln">6</a><code>end ckpt_01ARZ3NDEKTSV4RRFFQ69G5F01</code></li>
+    </ol>
+  </details>
+  <details id="cap-6265c6144995">
+    <summary><span class="mono">sha256:6265c6144995</span> · lane local · example-model · example-agent · effort high · context push</summary>
+    <ol class="transcript">
+      <li id="t-6265c6144995-1"><a href="#t-6265c6144995-1" class="ln">1</a><code>start ckpt_01ARZ3NDEKTSV4RRFFQ69G5F02 base c36f7efafb3b tree 4b825dc642cb</code></li>
+      <li id="t-6265c6144995-2"><a href="#t-6265c6144995-2" class="ln">2</a><code>edit pkg/objstore/sigv4.go (&#43;2 −1)</code></li>
+      <li id="t-6265c6144995-3"><a href="#t-6265c6144995-3" class="ln">3</a><code>$ go test ./pkg/objstore</code></li>
+      <li id="t-6265c6144995-4"><a href="#t-6265c6144995-4" class="ln">4</a><code>--- PASS: TestPutIsWriteOnce (0.12s)</code></li>
+      <li id="t-6265c6144995-5"><a href="#t-6265c6144995-5" class="ln">5</a><code>--- FAIL: TestCorruptMemberFailsGet (0.03s): get returned nil error</code></li>
+      <li id="t-6265c6144995-6"><a href="#t-6265c6144995-6" class="ln">6</a><code>[X-9] PASS Legacy export still works</code></li>
+      <li id="t-6265c6144995-7"><a href="#t-6265c6144995-7" class="ln">7</a><code>end ckpt_01ARZ3NDEKTSV4RRFFQ69G5F02</code></li>
+    </ol>
+  </details>
+  <details id="cap-6f8c67fe110b">
+    <summary><span class="mono">sha256:6f8c67fe110b</span> · lane local · example-model · example-agent · effort high · context push</summary>
+    <ol class="transcript">
+      <li id="t-6f8c67fe110b-1"><a href="#t-6f8c67fe110b-1" class="ln">1</a><code>start ckpt_01ARZ3NDEKTSV4RRFFQ69G5F03 base f31bb3843c87 tree 4b825dc642cb</code></li>
+      <li id="t-6f8c67fe110b-2"><a href="#t-6f8c67fe110b-2" class="ln">2</a><code>$ sh check.sh</code></li>
+      <li id="t-6f8c67fe110b-3"><a href="#t-6f8c67fe110b-3" class="ln">3</a><code>ok   all packages</code></li>
+      <li id="t-6f8c67fe110b-4"><a href="#t-6f8c67fe110b-4" class="ln">4</a><code>verifier PASS verifier exits 0</code></li>
+      <li id="t-6f8c67fe110b-5"><a href="#t-6f8c67fe110b-5" class="ln">5</a><code>end ckpt_01ARZ3NDEKTSV4RRFFQ69G5F03</code></li>
+    </ol>
+  </details>
+</section>
+</main>
+</div>
+
+<footer class="colophon">
+  <p class="mono">chimera trail · 8c7f55209158..5d3aeef7156a · 4 commits · 3 capsules · 4 files, 4 packages, 10 lines</p>
+</footer>
+</body>
+</html>

@@ -36,6 +36,10 @@ var lockedAssets = []string{
 	"fonts/ibm-plex-sans-latin-600-normal.woff2",
 }
 
+// LockedAssets returns the names of the Folio assets every report bundle
+// ships byte-for-byte, relative to the bundle root.
+func LockedAssets() []string { return append([]string{}, lockedAssets...) }
+
 // FormatDuration renders milliseconds for humans: 1.42s, 3m07s.
 func FormatDuration(ms int64) string {
 	if ms < 60_000 {
