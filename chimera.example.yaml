@@ -1,0 +1,24 @@
+# chimera.example.yaml — placeholder values only
+tenant:
+  owner_emails: [owner@example.com]
+  repos: [acme/widget]
+  denylist_file: ~/.config/chimera/denylist.txt   # extra private terms, one per line, never committed
+store:
+  endpoint: https://s3.example.com
+  bucket: acme-capsules
+  region: auto
+ledger:
+  path: ~/.local/state/chimera/ledger.db
+ring0:
+  paths: [".github/workflows/**", "verify/**", ".chimera/**"]
+runners:
+  local: {}
+  boat: { command: boat }
+harnesses:
+  example-agent: { command: ["example-agent", "--prompt-file", "{{.PromptFile}}"] }
+verifiers:
+  default: { command: ["go", "test", "./..."], timeout: 10m }
+lanes:
+  default: { model: example-model, harness: example-agent, effort: high, context_policy: push, runner: local }
+prices:
+  example-model: { input_per_mtok: 1.00, output_per_mtok: 4.00 }
