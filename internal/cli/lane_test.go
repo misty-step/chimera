@@ -270,6 +270,21 @@ func TestM1_4_BenchTableJSONAndIndexedCapsules(t *testing.T) {
 		}
 	}
 
+	// Usage errors.
+	for _, args := range [][]string{{"bench"}, {"bench", "--matrix", "missing.yaml"}, {"bench", "--matrix", matrix, "-K", "0"}, {"bench", "--matrix", matrix, "--k", "2"}} {
+		if r := run(t, repo, env, append(args, "--config", cfg)...); r.code != ExitUsage || r.stdout != "" {
+			t.Errorf("%v: %+v", args, r)
+		}
+	}
+}
+
+// TestM1_4_RunEqualsBenchK1ThroughTheCLI: `chimera run` and
+// `chimera bench -K 1` on the same inputs record the same evidence. Only the
+// checkpoint, the times, and the bench tag differ.
+func TestM1_4_RunEqualsBenchK1ThroughTheCLI(t *testing.T) {
+	repo, cfg, env := laneFixture(t)
+	matrix := benchFile(t, repo)
+	store := objstore.NewDir(strings.TrimPrefix(readStoreEndpoint(t, cfg), "file://"))
 	// run equals bench -K 1 on the same inputs: same Intent and lane give the
 	// same cell, diff, and verdicts; only the checkpoint and times differ.
 	one := run(t, repo, env, "bench", "--matrix", matrix, "-K", "1", "--config", cfg, "--json")
@@ -309,12 +324,6 @@ func TestM1_4_BenchTableJSONAndIndexedCapsules(t *testing.T) {
 		t.Fatal("bench tag")
 	}
 
-	// Usage errors.
-	for _, args := range [][]string{{"bench"}, {"bench", "--matrix", "missing.yaml"}, {"bench", "--matrix", matrix, "-K", "0"}, {"bench", "--matrix", matrix, "--k", "2"}} {
-		if r := run(t, repo, env, append(args, "--config", cfg)...); r.code != ExitUsage || r.stdout != "" {
-			t.Errorf("%v: %+v", args, r)
-		}
-	}
 }
 
 func readFile(t *testing.T, p string) string {
@@ -460,5 +469,33 @@ func TestM1_3_LedgerIndexQueryPreflightRebuild(t *testing.T) {
 	// The Ledger file is never inside the repository.
 	if out := gitOut(t, repo, "status", "--porcelain", "--ignored"); out != "" {
 		t.Fatalf("ledger or evidence leaked into the work tree: %s", out)
+	}
+}
+
+// TestM1_4_NoEscapeBytesFromHarnessOrVerifierReachTheTerminal: evidence text
+// comes from the verifier; DESIGN.md §1.4 allows zero escape bytes off a TTY.
+func TestM1_4_NoEscapeBytesFromHarnessOrVerifierReachTheTerminal(t *testing.T) {
+	repo, cfg, env := laneFixture(t)
+	body := strings.Replace(readFile(t, cfg), `default: { command: ["sh", "verify/check.sh"], timeout: 30s }`,
+		`default: { command: ["sh", "-c", "printf '\\033[31mFAIL: 1 test\\033[0m\\a\\n'; exit 1"], timeout: 30s }`, 1)
+	if body == readFile(t, cfg) {
+		t.Fatal("fixture config changed shape")
+	}
+	colored := writeConfig(t, body)
+	intent := "task:" + shaOf("colors")
+	for _, args := range [][]string{
+		{"run", "--intent", intent, "--lane", "bad", "--config", colored},
+		{"run", "--intent", intent, "--lane", "bad", "--config", colored, "--json"},
+		{"preflight", "--failure", "FAIL: 1 test", "--config", colored},
+		{"ledger", "query", "FAIL test", "--config", colored},
+	} {
+		r := run(t, repo, env, args...)
+		if strings.ContainsAny(r.stdout+r.stderr, "\x1b\x07") {
+			t.Errorf("%v: escape or control byte in output: %q", args[:1], r.stdout+r.stderr)
+		}
+	}
+	r := run(t, repo, env, "run", "--intent", intent, "--lane", "bad", "--config", colored)
+	if r.code != ExitError || !strings.Contains(r.stdout, "exit 1: [31mFAIL: 1 test[0m") {
+		t.Fatalf("%+v", r)
 	}
 }

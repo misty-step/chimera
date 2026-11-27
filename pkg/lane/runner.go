@@ -52,10 +52,13 @@ type Workspace interface {
 type ExecResult struct {
 	ExitCode int
 	Stdout   []byte // stdout alone, capped: what a caller parses
-	Output   []byte // stdout and stderr, interleaved, capped
-	TimedOut bool
-	WallMS   int64
-	Err      string // why the command could not run at all; "" otherwise
+	// StdoutTruncated is set when Stdout hit the cap; a caller parsing it
+	// must refuse rather than use a partial answer.
+	StdoutTruncated bool
+	Output          []byte // stdout and stderr, interleaved, capped
+	TimedOut        bool
+	WallMS          int64
+	Err             string // why the command could not run at all; "" otherwise
 }
 
 // maxOutput caps captured output per command.
@@ -110,10 +113,18 @@ func run(ctx context.Context, dir string, argv, env []string, timeout time.Durat
 	cmd.WaitDelay = 2 * time.Second
 	start := time.Now()
 	err := cmd.Run()
-	res := ExecResult{Output: out.bytes(), Stdout: stdout.buf.Bytes(), WallMS: time.Since(start).Milliseconds()}
+	// Whatever happened, nothing the command started may outlive it.
+	killProcessGroup(cmd)
+	res := ExecResult{Output: out.bytes(), Stdout: stdout.buf.Bytes(), StdoutTruncated: stdout.truncated, WallMS: time.Since(start).Milliseconds()}
 	var ee *exec.ExitError
 	switch {
 	case err == nil:
+	case errors.Is(err, exec.ErrWaitDelay) && tctx.Err() == nil:
+		// The command exited but a child it left behind held the output pipe
+		// open. The command's own exit status stands.
+		if cmd.ProcessState != nil {
+			res.ExitCode = cmd.ProcessState.ExitCode()
+		}
 	case tctx.Err() != nil:
 		res.TimedOut = ctx.Err() == nil
 		res.ExitCode = -1
@@ -192,11 +203,27 @@ func (w *localWS) Tree(ctx context.Context) (string, error) {
 	return gitx.RevParse(ctx, w.tree, "HEAD^{tree}")
 }
 
+// diffArgs is the one way Chimera renders a lane's diff. Every option that
+// ambient or harness-written Git config could change is pinned, so the same
+// tree change gives the same bytes on any machine.
+func diffArgs(base string) []string {
+	return []string{"-c", "core.quotePath=false", "-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false",
+		"diff", "--cached", "--full-index", "--binary", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color",
+		"--src-prefix=a/", "--dst-prefix=b/", base}
+}
+
+// Diff stages the whole tree into a private index seeded from the base
+// commit, so flags a harness set on the checkout's own index
+// (skip-worktree, assume-unchanged) cannot hide a change.
 func (w *localWS) Diff(ctx context.Context) ([]byte, error) {
-	if _, err := gitx.Run(ctx, w.tree, "add", "-A"); err != nil {
+	env := []string{"GIT_INDEX_FILE=" + filepath.Join(w.root, "diff.index")}
+	if _, err := gitx.RunInput(ctx, w.tree, nil, env, "read-tree", w.base); err != nil {
 		return nil, err
 	}
-	return gitx.Run(ctx, w.tree, "diff", "--cached", "--full-index", "--binary", w.base)
+	if _, err := gitx.RunInput(ctx, w.tree, nil, env, "add", "-A"); err != nil {
+		return nil, err
+	}
+	return gitx.RunInput(ctx, w.tree, nil, env, diffArgs(w.base)...)
 }
 
 func (w *localWS) Teardown(ctx context.Context) error {
@@ -320,6 +347,9 @@ func (w *boatWS) Read(ctx context.Context, name string) ([]byte, error) {
 	if r.ExitCode != 0 || r.Err != "" {
 		return nil, fmt.Errorf("boat ssh failed")
 	}
+	if r.StdoutTruncated {
+		return nil, fmt.Errorf("%s exceeds the %d MiB transfer cap", name, maxOutput>>20)
+	}
 	return r.Stdout, nil
 }
 
@@ -345,9 +375,17 @@ func (w *boatWS) Tree(ctx context.Context) (string, error) {
 }
 
 func (w *boatWS) Diff(ctx context.Context) ([]byte, error) {
-	r := w.sh(ctx, 5*time.Minute, "cd "+boatRoot+"/tree && git add -A && git diff --cached --full-index --binary HEAD")
+	var quoted []string
+	for _, a := range diffArgs("HEAD") {
+		quoted = append(quoted, shellQuote(a))
+	}
+	script := "cd " + boatRoot + "/tree && export GIT_INDEX_FILE=\"$PWD/../diff.index\" && git read-tree HEAD && git add -A && git " + strings.Join(quoted, " ")
+	r := w.sh(ctx, 5*time.Minute, script)
 	if r.ExitCode != 0 || r.Err != "" {
 		return nil, fmt.Errorf("boat ssh failed")
+	}
+	if r.StdoutTruncated {
+		return nil, fmt.Errorf("diff exceeds the %d MiB transfer cap", maxOutput>>20)
 	}
 	return r.Stdout, nil
 }

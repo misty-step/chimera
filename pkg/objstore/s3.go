@@ -59,13 +59,19 @@ func (s *S3) do(ctx context.Context, method, key string, query url.Values, body 
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return 0, nil, ctx.Err()
+		}
 		// Never include the request (and so its headers) in the error.
-		return 0, nil, fmt.Errorf("%s %s: transport error", method, key)
+		return 0, nil, &UnavailableError{Op: method, Key: key}
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, nil, fmt.Errorf("%s %s: short read", method, key)
+		return 0, nil, &UnavailableError{Op: method, Key: key}
+	}
+	if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusRequestTimeout {
+		return 0, nil, &UnavailableError{Op: method, Key: key, Status: resp.StatusCode}
 	}
 	return resp.StatusCode, data, nil
 }

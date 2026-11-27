@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"chimera/pkg/config"
+	"chimera/pkg/ledger"
 	"chimera/pkg/objstore"
 	"chimera/pkg/secretscan"
 )
@@ -61,6 +62,13 @@ func failed(object string, err error, next string) *cliError {
 // grid renders rows as aligned plain text with two-space gutters. The last
 // column is not padded.
 func grid(rows [][]string) string {
+	// Cells may hold text from files, harnesses, or verifiers; none of it may
+	// put a control or escape byte on the terminal (DESIGN.md §1.4).
+	for _, r := range rows {
+		for i := range r {
+			r[i] = ledger.Printable(r[i])
+		}
+	}
 	var w []int
 	for _, r := range rows {
 		for i, cell := range r {

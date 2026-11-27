@@ -141,27 +141,35 @@ func pathClause(path string) (string, []any) {
 	return ` AND (e.path = ? OR e.path LIKE ? ESCAPE '\')`, []any{path, esc + "/%"}
 }
 
-func (l *Ledger) superseded(ctx context.Context) (map[string]bool, error) {
-	rows, err := l.db.QueryContext(ctx, "SELECT DISTINCT supersedes FROM entries WHERE supersedes != ''")
+// superseded maps each superseded target (an entry id or a Capsule address)
+// to the highest authority among the entries that declare it superseded.
+func (l *Ledger) superseded(ctx context.Context) (map[string]string, error) {
+	rows, err := l.db.QueryContext(ctx, "SELECT supersedes, min(tier) FROM entries WHERE supersedes != '' GROUP BY supersedes")
 	if err != nil {
 		return nil, fmt.Errorf("ledger unreadable")
 	}
 	defer rows.Close()
-	out := map[string]bool{}
+	out := map[string]string{}
 	for rows.Next() {
-		var s string
-		if err := rows.Scan(&s); err != nil {
+		var target, tier string
+		if err := rows.Scan(&target, &tier); err != nil {
 			return nil, err
 		}
-		out[s] = true
+		out[target] = tier
 	}
 	return out, rows.Err()
 }
 
-// isSuperseded: an entry is superseded when another entry names its id or
-// the address of the Capsule it came from.
-func isSuperseded(set map[string]bool, e Entry) bool {
-	return set[e.ID] || (e.Capsule != "" && set[e.Capsule])
+// isSuperseded: an entry is superseded when another entry of the same or
+// higher authority names its id or the address of the Capsule it came from.
+// A lower tier can never supersede a higher one: an unverified claim cannot
+// retire the Folio.
+func isSuperseded(set map[string]string, e Entry) bool {
+	by := func(target string) bool {
+		tier, ok := set[target]
+		return ok && tier <= e.Tier
+	}
+	return by(e.ID) || (e.Capsule != "" && by(e.Capsule))
 }
 
 // Query ranks matches tier first, freshness second, BM25 third. Superseded
@@ -256,7 +264,7 @@ func snippet(body string, words []string) string {
 			}
 		}
 	}
-	pick = oneLine(pick)
+	pick = oneLine(Printable(pick))
 	if r := []rune(pick); len(r) > 96 {
 		pick = string(r[:95]) + "…"
 	}
@@ -283,6 +291,7 @@ type Scent struct {
 	Schema    string       `json:"schema"`
 	Repo      string       `json:"repo"`
 	Paths     []string     `json:"paths"`
+	PathCount int          `json:"path_count"` // target paths given, even if the list above was cut to fit
 	Signature string       `json:"failure_signature,omitempty"`
 	Total     int          `json:"total"` // entries that matched before the byte cap
 	Entries   []ScentEntry `json:"entries"`
@@ -299,7 +308,7 @@ func (l *Ledger) Preflight(ctx context.Context, repo string, paths []string, fai
 		}
 	}
 	sort.Strings(clean)
-	sc := &Scent{Schema: "chimera.preflight/v1", Repo: repo, Paths: clean, Entries: []ScentEntry{}}
+	sc := &Scent{Schema: "chimera.preflight/v1", Repo: repo, Paths: clean, PathCount: len(clean), Entries: []ScentEntry{}}
 	if strings.TrimSpace(failure) != "" {
 		sc.Signature = "sig:" + FailureSignature(failure)
 	}
@@ -419,7 +428,7 @@ func scentLine(e Entry) string {
 func (s *Scent) Text() string {
 	return fit(s, func(c *Scent) []byte {
 		var b strings.Builder
-		fmt.Fprintf(&b, "PREFLIGHT  repo=%s  paths=%d  entries=%d/%d", orDash(c.Repo), len(c.Paths), len(c.Entries), c.Total)
+		fmt.Fprintf(&b, "PREFLIGHT  repo=%s  paths=%d  entries=%d/%d", Printable(orDash(c.Repo)), len(c.Paths), len(c.Entries), c.Total)
 		if c.Signature != "" {
 			fmt.Fprintf(&b, "  failure=%s", c.Signature)
 		}
@@ -434,9 +443,9 @@ func (s *Scent) Text() string {
 		b.WriteString(grid(rows))
 		for _, e := range c.Entries {
 			if e.Warning != "" {
-				fmt.Fprintf(&b, "WARN  %s: %s in %s", orDash(e.Path), e.Warning, abbrevSource(e.Source))
+				fmt.Fprintf(&b, "WARN  %s: %s in %s", Printable(orDash(e.Path)), e.Warning, abbrevSource(e.Source))
 				if e.Why != "" {
-					fmt.Fprintf(&b, "; %s", e.Why)
+					fmt.Fprintf(&b, "; %s", Printable(e.Why))
 				}
 				b.WriteString("\n")
 			}
@@ -445,17 +454,35 @@ func (s *Scent) Text() string {
 	})
 }
 
-// JSON renders the scent as one JSON object of at most MaxScent bytes.
+// JSON renders the scent as one valid JSON object of at most MaxScent
+// bytes: entries are dropped first, lowest rank first, then target paths.
 func (s *Scent) JSON() string {
-	return fit(s, func(c *Scent) []byte {
+	render := func(c *Scent) []byte {
 		var b strings.Builder
 		enc := json.NewEncoder(&b)
 		enc.SetEscapeHTML(false)
 		enc.Encode(c)
 		return []byte(b.String())
-	})
+	}
+	c := *s
+	c.PathCount = len(s.Paths)
+	for {
+		out := render(&c)
+		switch {
+		case len(out) <= MaxScent:
+			return string(out)
+		case len(c.Entries) > 0:
+			c.Entries = c.Entries[:len(c.Entries)-1]
+		case len(c.Paths) > 0:
+			c.Paths = c.Paths[:len(c.Paths)-1]
+		default:
+			// Only an absurd repo name is left; say so in valid JSON.
+			return `{"schema":"chimera.preflight/v1","error":"scent exceeds 2048 bytes"}` + "\n"
+		}
+	}
 }
 
+// fit renders text, dropping the lowest-ranked entries until it fits.
 func fit(s *Scent, render func(*Scent) []byte) string {
 	c := *s
 	for {
@@ -491,7 +518,27 @@ func abbrevSource(s string) string {
 	return s
 }
 
+// Printable drops control characters (escape sequences included) from text
+// that came from a file, a harness, or a verifier, so that nothing Chimera
+// prints off a TTY can carry escape bytes.
+func Printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' {
+			return ' '
+		}
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
 func grid(rows [][]string) string {
+	for _, r := range rows {
+		for i := range r {
+			r[i] = Printable(r[i])
+		}
+	}
 	var w []int
 	for _, r := range rows {
 		for i, cell := range r {

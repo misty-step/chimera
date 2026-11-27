@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -110,7 +111,14 @@ func Open(ctx context.Context, path string) (*Ledger, error) {
 	}
 	// synchronous(OFF): the Ledger is derived and disposable, so durability
 	// across a crash is worth nothing; a damaged file is rebuilt.
-	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=busy_timeout(5000)&_pragma=synchronous(OFF)")
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("cannot resolve ledger path")
+	}
+	// A URL value escapes '?', '#', and '%' in the path, which would otherwise
+	// be read as the start of the URI's query.
+	uri := url.URL{Scheme: "file", Path: abs, RawQuery: "_pragma=busy_timeout(5000)&_pragma=synchronous(OFF)"}
+	db, err := sql.Open("sqlite", uri.String())
 	if err != nil {
 		return nil, fmt.Errorf("cannot open ledger")
 	}
@@ -244,7 +252,9 @@ func indexTree(ctx context.Context, tx *sql.Tx, src Source, st *Stats) error {
 	// have maps id → anchor plus the recorded intent, so a Folio entry is
 	// replaced when its own blob is unchanged but the Folio's identity moved.
 	have := map[string]string{}
-	rows, err := tx.QueryContext(ctx, "SELECT id, anchor, intent FROM entries WHERE tier = ? AND repo = ?", T0, src.Repo)
+	// T0 mirrors the one Git tree the Ledger is derived from: rows from any
+	// other tree or repo name are removed, exactly as a rebuild would.
+	rows, err := tx.QueryContext(ctx, "SELECT id, anchor, intent FROM entries WHERE tier = ?", T0)
 	if err != nil {
 		return err
 	}
@@ -370,18 +380,40 @@ func indexCapsules(ctx context.Context, tx *sql.Tx, store objstore.Store, st *St
 			st.Rejected++
 			continue
 		}
-		for _, e := range entries {
-			if err := insertEntry(ctx, tx, e); err != nil {
-				return err
-			}
+		// One Capsule's rows go in atomically; a Capsule whose rows cannot be
+		// inserted is rejected alone and never takes the index down with it.
+		if _, err := tx.ExecContext(ctx, "SAVEPOINT capsule"); err != nil {
+			return fmt.Errorf("ledger insert failed")
 		}
-		if lane != nil {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO lanes(capsule,bench,cell,k,model,harness,effort,context_policy,pass_rate,wall_ms,cost_usd) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-				lane.Capsule, lane.Bench, lane.Cell, lane.K, lane.Model, lane.Harness, lane.Effort, lane.ContextPolicy, lane.PassRate, lane.WallMS, lane.CostUSD); err != nil {
+		err = insertCapsule(ctx, tx, entries, lane)
+		if err != nil {
+			if _, rerr := tx.ExecContext(ctx, "ROLLBACK TO capsule"); rerr != nil {
 				return fmt.Errorf("ledger insert failed")
 			}
 		}
+		if _, rerr := tx.ExecContext(ctx, "RELEASE capsule"); rerr != nil {
+			return fmt.Errorf("ledger insert failed")
+		}
+		if err != nil {
+			st.Rejected++
+			continue
+		}
 		st.Capsules++
+	}
+	return nil
+}
+
+func insertCapsule(ctx context.Context, tx *sql.Tx, entries []Entry, lane *Lane) error {
+	for _, e := range entries {
+		if err := insertEntry(ctx, tx, e); err != nil {
+			return err
+		}
+	}
+	if lane != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO lanes(capsule,bench,cell,k,model,harness,effort,context_policy,pass_rate,wall_ms,cost_usd) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			lane.Capsule, lane.Bench, lane.Cell, lane.K, lane.Model, lane.Harness, lane.Effort, lane.ContextPolicy, lane.PassRate, lane.WallMS, lane.CostUSD); err != nil {
+			return fmt.Errorf("ledger insert failed")
+		}
 	}
 	return nil
 }

@@ -193,6 +193,7 @@ type LaneReport struct {
 	Capsule    string            `json:"capsule"` // "" when no Capsule was produced
 	Checkpoint string            `json:"checkpoint,omitempty"`
 	Error      string            `json:"error,omitempty"`
+	Warning    string            `json:"warning,omitempty"`
 	Pass       bool              `json:"pass"`
 	WallMS     int64             `json:"wall_ms"`
 	CostUSD    *float64          `json:"cost_usd"`
@@ -290,6 +291,7 @@ func Run(ctx context.Context, plan Plan, deps Deps) (*Report, error) {
 			}
 			lr.Checkpoint, lr.Tree, lr.Verdicts, lr.Pass = res.Checkpoint, res.Tree, res.Verdicts, res.Passed()
 			lr.WallMS, lr.CostUSD, lr.Transcript, lr.Diff = res.Metrics.WallMS, res.Metrics.CostUSD, res.Transcript, res.Diff
+			lr.Warning = res.Warning
 			if err := deps.Push(ctx, res.Dir); err != nil {
 				lr.Error = err.Error()
 				lr.Pass = false
@@ -316,6 +318,13 @@ func summarize(cr *CellReport) {
 	var cost float64
 	costKnown := len(cr.Lanes) > 0
 	for _, l := range cr.Lanes {
+		if l.Capsule == "" {
+			// A lane with no Capsule proved nothing. It counts as one failed
+			// criterion, so a crash can never raise the pass rate.
+			judged++
+			costKnown = false
+			continue
+		}
 		if l.Pass {
 			cr.AllPass++
 		}
@@ -324,10 +333,6 @@ func summarize(cr *CellReport) {
 			if v.Pass {
 				passed++
 			}
-		}
-		if l.Capsule == "" {
-			costKnown = false
-			continue
 		}
 		walls = append(walls, l.WallMS)
 		if l.CostUSD == nil {

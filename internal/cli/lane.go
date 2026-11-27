@@ -75,7 +75,7 @@ func (c *ctx) laneDeps(cfg *config.Config, store objstore.Store, root, repo stri
 			return err
 		},
 		Progress: func(cell lane.Cell, k, total int) {
-			c.info("lane: cell %s  %s  k=%d/%d", cell.Hash(), laneLine(cell.Lane), k, total)
+			c.progress("lane: cell %s  %s  k=%d/%d", cell.Hash(), laneLine(cell.Lane), k, total)
 		},
 	}
 	if len(globs) > 0 {
@@ -224,6 +224,7 @@ func runRun(c *ctx) error {
 		Harness: harness, Price: price(cfg, lc.Model),
 	}}}
 	rep, err := lane.Run(c, plan, deps)
+	c.clearProgress()
 	if err != nil && (rep == nil || len(rep.Cells) == 0) {
 		return failed("lane "+name, err, "no capsule recorded")
 	}
@@ -409,6 +410,7 @@ func runBench(c *ctx) error {
 		return err
 	}
 	rep, runErr := lane.Run(c, plan, deps)
+	c.clearProgress()
 	if rep == nil || (runErr != nil && c.Err() != nil) {
 		return failed("bench "+m.ID, runErr, "bench incomplete")
 	}

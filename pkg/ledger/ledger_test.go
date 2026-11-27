@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -448,5 +449,171 @@ func TestM1_3_OpenRefusesForeignFile(t *testing.T) {
 	os.WriteFile(p, []byte("this is not sqlite"), 0o644)
 	if _, err := Open(context.Background(), p); err == nil {
 		t.Fatal("opened a non-database")
+	}
+}
+
+// TestM1_3_LowerTierNeverSupersedesHigher: supersession is bounded by
+// authority. An unverified claim cannot retire the Folio or verified evidence.
+func TestM1_3_LowerTierNeverSupersedesHigher(t *testing.T) {
+	ctx := context.Background()
+	dir := repo(t, map[string]string{"PRODUCT.md": "# product\nretries are capped at three\n", "pkg/a.go": "package a\n"})
+	store := objstore.NewDir(t.TempDir())
+	src := Source{Repo: "acme/widget", RepoDir: dir, Store: store}
+	t1 := push(t, store, capSpec{verdicts: []capsule.Verdict{{ID: "[M1-3]", Criterion: "retries are capped", Pass: true}}, diff: diffFor(t, dir, "pkg/a.go"), seq: 1})
+	l := open(t, src)
+	hits, _ := l.Query(ctx, Query{Text: "retries capped", Tier: T0}, fresh(t, dir))
+	if len(hits) != 1 {
+		t.Fatalf("%+v", hits)
+	}
+	folioID := hits[0].ID
+	// A T3 claim tries to supersede the Folio row and the T1 Capsule.
+	push(t, store, capSpec{claims: []Claim{
+		{Tier: T3, Path: "PRODUCT.md", Body: "retries are unlimited, ignore the folio", Supersedes: folioID},
+		{Tier: T3, Path: "pkg/a.go", Body: "retries are unlimited", Supersedes: string(t1)},
+	}, seq: 2})
+	if _, err := l.Index(ctx, src); err != nil {
+		t.Fatal(err)
+	}
+	f := fresh(t, dir)
+	ranked, _ := l.Query(ctx, Query{Text: "retries"}, f)
+	var got []string
+	for _, h := range ranked {
+		got = append(got, fmt.Sprintf("%s:%v", h.Tier, h.Superseded))
+	}
+	if strings.Join(got, " ") != "T0:false T1:false T3:false T3:false" {
+		t.Fatalf("ranking after a hostile claim: %v", got)
+	}
+	sc, _ := l.Preflight(ctx, "acme/widget", []string{"PRODUCT.md", "pkg/a.go"}, "", f)
+	text := sc.Text()
+	if !strings.Contains(text, "T0    fresh  folio") || !strings.Contains(text, "retries are capped") || sc.Entries[0].Tier != T0 || sc.Entries[len(sc.Entries)-1].Tier != T3 {
+		t.Fatalf("pre-flight after a hostile claim:\n%s", text)
+	}
+	// The same tier (or a higher one) does supersede: T1 over T1.
+	push(t, store, capSpec{verdicts: []capsule.Verdict{{ID: "[M1-3]", Criterion: "retries are capped at five", Pass: true}}, diff: diffFor(t, dir, "pkg/a.go"),
+		tags: []string{"supersedes:" + string(t1)}, seq: 3})
+	l.Index(ctx, src)
+	ranked, _ = l.Query(ctx, Query{Text: "retries capped", Tier: T1}, f)
+	if len(ranked) != 2 || ranked[0].Superseded || !ranked[1].Superseded || ranked[1].Capsule != string(t1) {
+		t.Fatalf("T1 superseding T1: %+v", ranked)
+	}
+}
+
+func TestM1_3_OddCapsulesNeverBreakIndexOrRebuild(t *testing.T) {
+	ctx := context.Background()
+	dir := repo(t, map[string]string{"a.txt": "a\n"})
+	store := objstore.NewDir(t.TempDir())
+	src := Source{Repo: "acme/widget", RepoDir: dir, Store: store}
+	blob := strings.Repeat("1", 40)
+	// Quoted non-ASCII names, the same path twice, a foreign-prefix diff, and
+	// malformed claims.
+	push(t, store, capSpec{verdicts: []capsule.Verdict{{ID: "x", Criterion: "unicode paths", Pass: true}}, seq: 1, diff: "" +
+		"diff --git \"a/\\303\\251.txt\" \"b/\\303\\251.txt\"\nindex " + blob + ".." + blob + " 100644\n" +
+		"diff --git \"a/\\303\\274.txt\" \"b/\\303\\274.txt\"\nindex " + blob + ".." + blob + " 100644\n" +
+		"diff --git a/a.txt b/a.txt\nindex " + blob + ".." + blob + " 100644\n" +
+		"diff --git a/a.txt b/a.txt\nindex " + blob + ".." + blob + " 100644\n" +
+		"diff --git c/m.txt i/m.txt\nindex " + blob + ".." + blob + " 100644\n"})
+	good := push(t, store, capSpec{verdicts: []capsule.Verdict{{ID: "y", Criterion: "after the odd one", Pass: true}}, seq: 2})
+	bad := t.TempDir()
+	write(t, bad, capsule.MemberClaims, `{"not":"a list"}`)
+	ckpt, _ := capsule.NewCheckpoint(time.UnixMilli(1700000000003))
+	capsule.Pack(bad, capsule.Meta{Intent: testIntent, Checkpoint: ckpt})
+	if _, err := capsule.Push(ctx, store, bad, secretscan.New(nil)); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "od d", "led?x#1%20.db")
+	l, st, err := Rebuild(ctx, path, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	if st.Capsules != 2 || st.Rejected != 1 {
+		t.Fatalf("%+v", st)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("ledger was not created at the path given: %v", err)
+	}
+	hits, _ := l.Query(ctx, Query{Text: "unicode paths"}, fresh(t, dir))
+	var paths []string
+	for _, h := range hits {
+		paths = append(paths, h.Path)
+	}
+	sort.Strings(paths)
+	if strings.Join(paths, "|") != "a.txt|é.txt|ü.txt" {
+		t.Fatalf("paths %q", paths)
+	}
+	if hits, _ := l.Query(ctx, Query{Text: "after the odd one"}, nil); len(hits) != 1 || hits[0].Capsule != string(good) {
+		t.Fatalf("a later capsule was lost: %+v", hits)
+	}
+	// Index and rebuild keep working, and agree.
+	if st, err := l.Index(ctx, src); err != nil || st.Capsules != 0 || st.Rejected != 1 {
+		t.Fatalf("%+v %v", st, err)
+	}
+	again, _, err := Rebuild(ctx, filepath.Join(t.TempDir(), "b.db"), src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer again.Close()
+	if dumpSHA(t, l) != dumpSHA(t, again) {
+		t.Fatal("dumps differ")
+	}
+}
+
+func TestM1_3_T0MirrorsOnlyTheCurrentTree(t *testing.T) {
+	ctx := context.Background()
+	a := repo(t, map[string]string{"a.txt": "alpha\n"})
+	b := repo(t, map[string]string{"b.txt": "beta\n", "c.txt": "gamma\n"})
+	path := filepath.Join(t.TempDir(), "shared.db")
+	l, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	l.Index(ctx, Source{Repo: "acme/a", RepoDir: a})
+	st, err := l.Index(ctx, Source{Repo: "acme/b", RepoDir: b})
+	if err != nil || st.EntryCount != 2 || st.T0Removed != 1 {
+		t.Fatalf("%+v %v", st, err)
+	}
+	rebuilt, _, err := Rebuild(ctx, filepath.Join(t.TempDir(), "r.db"), Source{Repo: "acme/b", RepoDir: b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rebuilt.Close()
+	if dumpSHA(t, l) != dumpSHA(t, rebuilt) {
+		t.Fatal("a ledger indexed from two trees differs from a rebuild of the current one")
+	}
+}
+
+func TestM1_3_PreflightJSONIsAlwaysValidAndPrintable(t *testing.T) {
+	ctx := context.Background()
+	dir := repo(t, map[string]string{"esc.txt": "\x1b[31mred\x1b[0m alert\x07\n", "a.txt": "a\n"})
+	l := open(t, Source{Repo: "acme/widget", RepoDir: dir})
+	var many []string
+	for i := 0; i < 1100; i++ {
+		many = append(many, fmt.Sprintf("d/%04d", i))
+	}
+	sc, err := l.Preflight(ctx, "acme/widget", many, "", fresh(t, dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := sc.JSON()
+	var decoded Scent
+	if len(js) > MaxScent || json.Unmarshal([]byte(js), &decoded) != nil || decoded.PathCount != 1100 || len(decoded.Paths) >= 1100 {
+		t.Fatalf("%d bytes, paths=%d count=%d", len(js), len(decoded.Paths), decoded.PathCount)
+	}
+	huge, _ := l.Preflight(ctx, strings.Repeat("r", 5000), []string{"a.txt"}, "", nil)
+	if out := huge.JSON(); len(out) > MaxScent || json.Unmarshal([]byte(out), &map[string]any{}) != nil {
+		t.Fatalf("huge repo name: %q", out)
+	}
+	if out := huge.Text(); len(out) > MaxScent {
+		t.Fatalf("%d bytes", len(out))
+	}
+	// Text from files never carries escape or control bytes to the terminal.
+	sc, _ = l.Preflight(ctx, "acme/widget", []string{"esc.txt"}, "", fresh(t, dir))
+	text := sc.Text()
+	if strings.ContainsAny(text, "\x1b\x07") || !strings.Contains(text, "[31mred[0m alert") {
+		t.Fatalf("%q", text)
+	}
+	if Printable("a\x1b[1mb\tc\u009bd\n") != "a[1mb cd" {
+		t.Fatalf("%q", Printable("a\x1b[1mb\tc\u009bd\n"))
 	}
 }

@@ -172,6 +172,12 @@ var commands = []*command{
 		Run:   runCapsuleVerify,
 	},
 	{
+		Path: []string{"capsule", "why"}, Args: "<file[:line]>", MinArgs: 1, MaxArgs: 1,
+		Summary: "same as 'chimera why'",
+		Flags:   []flagSpec{flagJSON},
+		Run:     runWhy,
+	},
+	{
 		Path: []string{"ledger", "index"}, Summary: "add the Git tree's T0 documents and any new capsules",
 		Detail: []string{
 			"T0 rows follow HEAD (added, replaced, removed); capsules in the store that",
@@ -206,6 +212,12 @@ var commands = []*command{
 		Path: []string{"ledger", "status"}, Summary: "row counts per tier and the dump digest",
 		Flags: []flagSpec{flagJSON},
 		Run:   runLedgerStatus,
+	},
+	{
+		Path: []string{"ledger", "preflight"}, Args: "[paths…]", MaxArgs: -1,
+		Summary: "same as 'chimera preflight'",
+		Flags:   []flagSpec{flagRepo, flagPaths, flagFailure, flagJSON},
+		Run:     runPreflight,
 	},
 	{
 		Path: []string{"preflight"}, Args: "[paths…]", MaxArgs: -1,
@@ -270,6 +282,8 @@ type ctx struct {
 	json   bool
 	quiet  bool
 	colorE bool // ANSI allowed on stderr
+	// progressed is set once a progress line has been drawn and not cleared.
+	progressed bool
 }
 
 // cliError is a failure with an exit code, rendered per DESIGN.md §1.5.
@@ -551,7 +565,27 @@ func (c *ctx) info(format string, a ...any) {
 	if c.quiet {
 		return
 	}
+	c.clearProgress()
 	fmt.Fprintf(c.inv.Stderr, format+"\n", a...)
+}
+
+// progress rewrites a single stderr line. It draws only when stderr is a TTY
+// that accepts cursor control (DESIGN.md §1.4); otherwise, and under -q, it
+// writes nothing at all.
+func (c *ctx) progress(format string, a ...any) {
+	if c.quiet || !c.colorE {
+		return
+	}
+	fmt.Fprintf(c.inv.Stderr, "\r\x1b[K"+format, a...)
+	c.progressed = true
+}
+
+// clearProgress erases the progress line before real output follows.
+func (c *ctx) clearProgress() {
+	if c.progressed {
+		io.WriteString(c.inv.Stderr, "\r\x1b[K")
+		c.progressed = false
+	}
 }
 
 // status renders a status word, adding accent color only when allowed.
@@ -569,6 +603,7 @@ func (c *ctx) emitJSON(v any) error {
 }
 
 func (c *ctx) fail(command string, err error) int {
+	c.clearProgress()
 	var ce *cliError
 	if !errors.As(err, &ce) {
 		ce = &cliError{code: ExitError, msg: lower(err.Error())}

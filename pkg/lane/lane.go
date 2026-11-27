@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/template"
 	"time"
@@ -120,6 +121,9 @@ type Result struct {
 	Diff       []byte
 	Transcript []Event
 	Tags       []string
+	// Warning is a problem that did not invalidate the evidence, such as a
+	// sandbox that could not be torn down.
+	Warning string
 }
 
 // Passed reports whether every criterion passed (and there is at least one).
@@ -221,9 +225,14 @@ func Execute(ctx context.Context, runner Runner, spec Spec) (res *Result, err er
 		return nil, fmt.Errorf("runner %s: %w", runner.Name(), err)
 	}
 	defer func() {
-		// Tear down even when interrupted.
-		if terr := ws.Teardown(context.WithoutCancel(ctx)); terr != nil && err == nil {
-			res, err = nil, fmt.Errorf("runner %s: %w", runner.Name(), terr)
+		// Tear down even when interrupted. A sandbox that will not go away does
+		// not undo a finished lane: the Capsule stands and the failure is reported.
+		if terr := ws.Teardown(context.WithoutCancel(ctx)); terr != nil {
+			if res != nil {
+				res.Warning = fmt.Sprintf("runner %s: %s", runner.Name(), terr)
+			} else if err == nil {
+				err = fmt.Errorf("runner %s: %w", runner.Name(), terr)
+			}
 		}
 	}()
 	tree, err := ws.Tree(ctx)
@@ -256,13 +265,21 @@ func Execute(ctx context.Context, runner Runner, spec Spec) (res *Result, err er
 		env = append(env, "CHIMERA_SCENT_FILE="+v.ScentFile)
 	}
 
-	// Lanes run with Ring-0 paths read-only.
+	// Lanes run with Ring-0 paths read-only. Their blob IDs are recorded now
+	// and compared after the verifier, independent of the diff.
+	ring0 := map[string]string{} // path → blob at base
+	var locked []string
 	if spec.Ring0 != nil {
-		listed := ws.Exec(ctx, []string{"git", "ls-files", "-z"}, nil, time.Minute)
-		var locked []string
-		for _, f := range strings.Split(string(listed.Stdout), "\x00") {
-			if f != "" && spec.Ring0(f) {
-				locked = append(locked, f)
+		listed := ws.Exec(ctx, []string{"git", "ls-files", "-s", "-z"}, nil, time.Minute)
+		for _, rec := range strings.Split(string(listed.Stdout), "\x00") {
+			meta, path, ok := strings.Cut(rec, "\t")
+			f := strings.Fields(meta)
+			if !ok || len(f) != 3 || !spec.Ring0(path) {
+				continue
+			}
+			locked = append(locked, path)
+			if f[0] != "120000" { // a symlink's blob is its target text, not file content
+				ring0[path] = f[1]
 			}
 		}
 		if len(locked) > 0 {
@@ -358,12 +375,29 @@ func Execute(ctx context.Context, runner Runner, spec Spec) (res *Result, err er
 		return nil, fmt.Errorf("runner %s: %w", runner.Name(), err)
 	}
 	if spec.Ring0 != nil {
-		var touched []string
+		changed := map[string]bool{}
 		for _, t := range capsule.TouchedPaths(diff) {
 			if spec.Ring0(t.Path) {
-				touched = append(touched, t.Path)
+				changed[t.Path] = true
 			}
 		}
+		// Second, independent check: hash the files as they are on disk, with
+		// no filters, and compare with the base blobs.
+		for _, path := range locked {
+			want, ok := ring0[path]
+			if !ok {
+				continue
+			}
+			h := ws.Exec(ctx, []string{"git", "hash-object", "--no-filters", "--", path}, nil, time.Minute)
+			if h.ExitCode != 0 || strings.TrimSpace(string(h.Stdout)) != want {
+				changed[path] = true
+			}
+		}
+		touched := make([]string, 0, len(changed))
+		for path := range changed {
+			touched = append(touched, path)
+		}
+		sort.Strings(touched)
 		if len(touched) > 0 {
 			addVerdict(capsule.Verdict{ID: "ring0", Criterion: "lane leaves Ring-0 paths unchanged", Pass: false, Evidence: "changed: " + strings.Join(touched, ", ")})
 		}

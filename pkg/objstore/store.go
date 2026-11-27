@@ -13,6 +13,27 @@ import (
 // ErrNotFound reports a missing object.
 var ErrNotFound = errors.New("object not found")
 
+// ErrUnavailable marks a request whose outcome is unknown: the store did not
+// answer, or answered with a transient status. The request may be retried.
+var ErrUnavailable = errors.New("store unavailable")
+
+// UnavailableError is an ErrUnavailable with its operation. It never carries
+// the request, so no header or credential can leak through it.
+type UnavailableError struct {
+	Op, Key string
+	Status  int // 0 for a transport failure
+}
+
+func (e *UnavailableError) Error() string {
+	if e.Status == 0 {
+		return fmt.Sprintf("%s %s: no answer from the store", e.Op, e.Key)
+	}
+	return fmt.Sprintf("%s %s: status %d", e.Op, e.Key, e.Status)
+}
+
+// Is reports ErrUnavailable.
+func (e *UnavailableError) Is(target error) bool { return target == ErrUnavailable }
+
 // Store is the whole object-store surface Chimera needs.
 type Store interface {
 	// Put writes key only if it does not exist (If-None-Match: *). created is

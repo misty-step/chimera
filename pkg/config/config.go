@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -150,7 +151,13 @@ func Load(opts Options, env Env) (*Config, error) {
 	return cfg, nil
 }
 
-func yamlErr(err error) string { return strings.TrimPrefix(err.Error(), "yaml: ") }
+var yamlValueRE = regexp.MustCompile("`[^`]*`")
+
+// yamlErr renders a decode error without the value excerpts the YAML library
+// quotes: a config value may be a tenant term, and errors are printed.
+func yamlErr(err error) string {
+	return yamlValueRE.ReplaceAllString(strings.TrimPrefix(err.Error(), "yaml: "), "<value>")
+}
 
 func errText(err error) string {
 	var pe *os.PathError

@@ -375,3 +375,142 @@ func TestM1_2_WriteReadVerifyOnDirectoryStore(t *testing.T) {
 		t.Fatalf("no store configured: %+v", r)
 	}
 }
+
+// TestM1_2_AttachHandlesAwkwardMessagesOrLeavesHistoryAlone: whatever the
+// message looks like, attach either leaves trailers Git can read back or
+// changes nothing.
+func TestM1_2_AttachHandlesAwkwardMessagesOrLeavesHistoryAlone(t *testing.T) {
+	repo := widgetRepo(t)
+	storeDir := filepath.Join(t.TempDir(), "store")
+	env := map[string]string{"CHIMERA_STORE_ENDPOINT": "file://" + storeDir}
+	dir := capsuleDir(t, repo, "ok\n")
+	addr := strings.TrimSpace(run(t, repo, env, "capsule", "write", dir, "--intent", fxIntent).stdout)
+	if !strings.HasPrefix(addr, "sha256:") {
+		t.Fatal("no capsule")
+	}
+	commitRaw := func(msg string) {
+		t.Helper()
+		writeFiles(t, repo, map[string]string{"n.txt": msg + genTerm(t)})
+		git(t, repo, "add", "-A")
+		tree := gitOut(t, repo, "write-tree")
+		cmd := exec.Command("git", "-c", "user.name=Example", "-c", "user.email=dev@example.com", "commit-tree", tree, "-p", "HEAD")
+		cmd.Dir = repo
+		cmd.Stdin = strings.NewReader(msg)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		git(t, repo, "update-ref", "HEAD", strings.TrimSpace(string(out)))
+	}
+	trailer := "Chimera-Intent: " + fxIntent + "\nChimera-Capsule: " + addr
+	for name, msg := range map[string]string{
+		"divider in body":     "subject\n\nbody text\n---\nnotes below a divider\n",
+		"no trailing newline": "subject without newline",
+		"body no newline":     "subject\n\nbody without newline",
+		"existing trailer":    "subject\n\nSigned-off-by: Example <dev@example.com>\n",
+		"unicode":             "sujet: café ☕\n\ncorps\n",
+	} {
+		commitRaw(msg)
+		subject := gitOut(t, repo, "log", "-1", "--format=%s")
+		r := run(t, repo, env, "capsule", "attach", "HEAD", addr)
+		if r.code != ExitOK {
+			t.Errorf("%s: %+v", name, r)
+			continue
+		}
+		got := gitOut(t, repo, "log", "-1", "--format=%B")
+		if !strings.HasSuffix(got, trailer) {
+			t.Errorf("%s: trailers are not the last lines:\n%s", name, got)
+		}
+		if gitOut(t, repo, "log", "-1", "--format=%s") != subject {
+			t.Errorf("%s: subject changed to %q", name, gitOut(t, repo, "log", "-1", "--format=%s"))
+		}
+		if parsed := gitOut(t, repo, "log", "-1", "--format=%(trailers:key=Chimera-Capsule,valueonly)"); strings.TrimSpace(parsed) != addr {
+			t.Errorf("%s: git does not parse the trailer: %q", name, parsed)
+		}
+		if w := run(t, repo, env, "why", "n.txt"); w.code != ExitOK {
+			t.Errorf("%s: why does not resolve: %+v", name, w)
+		}
+		if !strings.Contains(got, strings.TrimRight(msg, "\n")) {
+			t.Errorf("%s: original message was altered:\n%s", name, got)
+		}
+		// Attaching the same pair again changes nothing.
+		before := gitOut(t, repo, "rev-parse", "HEAD")
+		if r := run(t, repo, env, "capsule", "attach", "HEAD", addr); r.code != ExitOK || gitOut(t, repo, "log", "-1", "--format=%B") != got {
+			t.Errorf("%s: re-attach changed the message (%s → %s)", name, before, gitOut(t, repo, "rev-parse", "HEAD"))
+		}
+	}
+	// An empty message cannot carry trailers: refuse, history unchanged.
+	commitRaw("")
+	head := gitOut(t, repo, "rev-parse", "HEAD")
+	if r := run(t, repo, env, "capsule", "attach", "HEAD", addr); r.code != ExitError || !strings.Contains(r.stderr, "empty message") || !strings.HasSuffix(r.stderr, "; history unchanged\n") || gitOut(t, repo, "rev-parse", "HEAD") != head {
+		t.Fatalf("empty message: %+v", r)
+	}
+	// A merge in the chain: refuse, history unchanged.
+	git(t, repo, "checkout", "-q", "-b", "side", "HEAD~1")
+	writeFiles(t, repo, map[string]string{"side.txt": "s\n"})
+	commitAll(t, repo, "side: add")
+	git(t, repo, "checkout", "-q", "main")
+	git(t, repo, "-c", "user.name=Example", "-c", "user.email=dev@example.com", "merge", "-q", "--no-ff", "-m", "merge side", "side")
+	head = gitOut(t, repo, "rev-parse", "HEAD")
+	if r := run(t, repo, env, "capsule", "attach", "HEAD~1", addr); r.code != ExitError || gitOut(t, repo, "rev-parse", "HEAD") != head {
+		t.Fatalf("merge in the chain: %+v", r)
+	}
+	// Detached HEAD and the root commit both work.
+	root := gitOut(t, repo, "rev-list", "--max-parents=0", "HEAD")
+	git(t, repo, "checkout", "-q", "--detach", root)
+	if r := run(t, repo, env, "capsule", "attach", "HEAD", addr); r.code != ExitOK || !strings.HasSuffix(gitOut(t, repo, "log", "-1", "--format=%B"), trailer) {
+		t.Fatalf("root commit on a detached HEAD: %+v", r)
+	}
+}
+
+// TestM1_2_UnreachableStoreIsPendingNotFailed: DESIGN.md §1.3 — an upload
+// whose outcome is unknown exits 3; a refused or failed one exits 1.
+func TestM1_2_UnreachableStoreIsPendingNotFailed(t *testing.T) {
+	repo := widgetRepo(t)
+	dir := capsuleDir(t, repo, "ok\n")
+	fake, env := loopback(t)
+	if r := run(t, repo, env, "capsule", "pack", dir, "--intent", fxIntent, "--checkpoint", fxCheckpoint); r.code != ExitOK {
+		t.Fatalf("%+v", r)
+	}
+	down := map[string]string{}
+	for k, v := range env {
+		down[k] = v
+	}
+	down["CHIMERA_STORE_ENDPOINT"] = "http://127.0.0.1:1" // nothing listens here
+	r := run(t, repo, down, "capsule", "push", dir)
+	if r.code != ExitPending || r.stdout != "" || !strings.HasSuffix(r.stderr, "no answer from the store; upload unconfirmed; run the command again\n") {
+		t.Fatalf("unreachable store: %+v", r)
+	}
+	oneLowercaseErrorLine(t, []string{"capsule", "push"}, r.stderr)
+	var envl errorEnvelope
+	j := run(t, repo, down, "capsule", "get", strings.Repeat("0", 0)+"sha256:"+strings.Repeat("a", 64), "--json")
+	if json.Unmarshal([]byte(j.stdout), &envl) != nil || j.code != ExitError || envl.Code != 1 {
+		t.Fatalf("get from an unreachable store is an error, not pending: %+v", j)
+	}
+	assertNoTerm(t, r, env["CHIMERA_S3_SECRET_ACCESS_KEY"])
+	// Wrong credentials are a refusal (1), not pending.
+	bad := map[string]string{}
+	for k, v := range env {
+		bad[k] = v
+	}
+	bad["CHIMERA_S3_SECRET_ACCESS_KEY"] = "wrong-" + genTerm(t)
+	if r := run(t, repo, bad, "capsule", "push", dir); r.code != ExitError || !strings.Contains(r.stderr, "status 403") || len(fake.Keys()) != 0 {
+		t.Fatalf("bad credentials: %+v", r)
+	}
+	// The retry the message asks for then succeeds.
+	if r := run(t, repo, env, "capsule", "push", dir); r.code != ExitOK {
+		t.Fatalf("retry: %+v", r)
+	}
+}
+
+func TestM1_1_ConfigErrorsNeverEchoValues(t *testing.T) {
+	term := genTerm(t)
+	cfg := writeConfig(t, "tenant:\n  owner_emails: owner@"+term+".io\n  repos: {a: "+term+"}\n")
+	r := run(t, t.TempDir(), nil, "lint", "tenant-leak", "--config", cfg)
+	if r.code != ExitUsage || !strings.Contains(r.stderr, "invalid config") {
+		t.Fatalf("%+v", r)
+	}
+	if strings.Contains(strings.ToLower(r.stdout+r.stderr), term[:6]) {
+		t.Fatalf("config error echoes a config value: %q", r.stderr)
+	}
+}

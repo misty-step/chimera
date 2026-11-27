@@ -12,6 +12,7 @@ import (
 
 	"chimera/pkg/capsule"
 	"chimera/pkg/gitx"
+	"chimera/pkg/ledger"
 	"chimera/pkg/objstore"
 )
 
@@ -84,8 +85,12 @@ func (c *ctx) push(dir string) (capsule.PushResult, error) {
 		return res, &cliError{code: ExitError, object: "member " + ie.Member, msg: "readback hash mismatch", next: "integrity error; the capsule is not committed"}
 	case errors.Is(err, capsule.ErrNotPacked):
 		return res, usageErr(c.args[0], err.Error(), "nothing uploaded")
+	case errors.Is(err, objstore.ErrUnavailable):
+		// The store did not answer: the request was valid but whether the
+		// Capsule is committed is not known. Pending, not failed.
+		return res, &cliError{code: ExitPending, msg: lower(err.Error()), next: "upload unconfirmed; run the command again"}
 	case err != nil:
-		return res, failed("", err, "upload unconfirmed")
+		return res, failed("", err, "capsule not committed")
 	}
 	return res, nil
 }
@@ -299,11 +304,14 @@ func runCapsuleAttach(c *ctx) error {
 	if intent != l.Manifest.Intent {
 		return &cliError{code: ExitError, object: short(string(addr)), msg: "capsule records a different intent (" + short(l.Manifest.Intent) + ")", next: "refusing to attach; history unchanged"}
 	}
-	newSHA, err := attachTrailers(c, root, c.args[0], intent, string(addr))
+	newSHA, unsigned, err := attachTrailers(c, root, c.args[0], intent, string(addr))
 	if err != nil {
 		return failed(c.args[0], err, "history unchanged")
 	}
 	fmt.Fprintln(c.inv.Stdout, newSHA)
+	if unsigned > 0 {
+		c.info("capsule attach: %d rewritten commits were signed; a rewritten commit cannot keep its signature, sign again if required", unsigned)
+	}
 	c.info("capsule attach: %s  commit %s now carries %s and %s", c.status("PASS"), abbrev(newSHA), short(intent), short(string(addr)))
 	return nil
 }
@@ -311,36 +319,39 @@ func runCapsuleAttach(c *ctx) error {
 // attachTrailers rewrites commit (and the linear chain above it up to HEAD)
 // so that it carries both trailers. It refuses a commit that is already on a
 // remote-tracking branch or a chain that contains merges. Trees are reused,
-// so the index and work tree are untouched.
-func attachTrailers(c *ctx, root, rev, intent, addr string) (string, error) {
+// so the index and work tree are untouched. Before any ref moves it reads
+// the trailers back from the rewritten commit; if Git cannot see them there,
+// nothing changes. unsigned counts commits whose signature was dropped.
+func attachTrailers(c *ctx, root, rev, intent, addr string) (string, int, error) {
+	fail := func(err error) (string, int, error) { return "", 0, err }
 	target, err := gitx.RevParse(c, root, rev+"^{commit}")
 	if err != nil {
-		return "", err
+		return fail(err)
 	}
 	head, err := gitx.RevParse(c, root, "HEAD^{commit}")
 	if err != nil {
-		return "", err
+		return fail(err)
 	}
 	if _, err := gitx.Run(c, root, "merge-base", "--is-ancestor", target, head); err != nil {
-		return "", fmt.Errorf("commit is not an ancestor of HEAD")
+		return fail(fmt.Errorf("commit is not an ancestor of HEAD"))
 	}
 	remote, err := gitx.Run(c, root, "for-each-ref", "--contains", target, "--format=%(refname)", "refs/remotes")
 	if err != nil {
-		return "", err
+		return fail(err)
 	}
 	if len(bytes.TrimSpace(remote)) > 0 {
-		return "", fmt.Errorf("commit is already pushed; chimera does not rewrite published history")
+		return fail(fmt.Errorf("commit is already pushed; chimera does not rewrite published history"))
 	}
 	out, err := gitx.Run(c, root, "rev-list", "--reverse", "--ancestry-path", target+".."+head)
 	if err != nil {
-		return "", err
+		return fail(err)
 	}
 	chain := append([]string{target}, strings.Fields(string(out))...)
-	prevOld, prevNew := "", ""
+	prevOld, prevNew, firstNew, unsigned := "", "", "", 0
 	for i, sha := range chain {
 		raw, err := gitx.Run(c, root, "cat-file", "commit", sha)
 		if err != nil {
-			return "", err
+			return fail(err)
 		}
 		header, msg, _ := strings.Cut(string(raw), "\n\n")
 		var kept []string
@@ -352,12 +363,13 @@ func attachTrailers(c *ctx, root, rev, intent, addr string) (string, error) {
 				continue // continuation of a dropped signature
 			case strings.HasPrefix(line, "gpgsig"):
 				skipping = true // a rewritten commit cannot keep its signature
+				unsigned++
 				continue
 			case strings.HasPrefix(line, "parent "):
 				parents++
 				if i > 0 {
 					if strings.TrimPrefix(line, "parent ") != prevOld {
-						return "", fmt.Errorf("history above the commit is not linear")
+						return fail(fmt.Errorf("history above the commit is not linear"))
 					}
 					line = "parent " + prevNew
 				}
@@ -366,32 +378,47 @@ func attachTrailers(c *ctx, root, rev, intent, addr string) (string, error) {
 			kept = append(kept, line)
 		}
 		if parents > 1 {
-			return "", fmt.Errorf("merge commits cannot be rewritten")
+			return fail(fmt.Errorf("merge commits cannot be rewritten"))
 		}
 		if i == 0 {
-			if msg, err = gitx.WithTrailers(c, root, msg, intent, addr); err != nil {
-				return "", err
+			if strings.TrimSpace(msg) == "" {
+				return fail(fmt.Errorf("commit has an empty message; trailers need a subject above them"))
+			}
+			// Trailers are only trailers in a newline-terminated message.
+			if msg, err = gitx.WithTrailers(c, root, strings.TrimRight(msg, "\n")+"\n", intent, addr); err != nil {
+				return fail(err)
 			}
 		}
 		obj, err := gitx.RunInput(c, root, []byte(strings.Join(kept, "\n")+"\n\n"+msg), nil, "hash-object", "-t", "commit", "-w", "--stdin")
 		if err != nil {
-			return "", err
+			return fail(err)
 		}
 		prevOld, prevNew = sha, strings.TrimSpace(string(obj))
-	}
-	newTarget := prevNew
-	if len(chain) > 1 {
-		// Recover the rewritten target: it is the root of the new chain.
-		out, err := gitx.Run(c, root, "rev-list", "--reverse", "-n", strconv.Itoa(len(chain)), prevNew)
-		if err != nil {
-			return "", err
+		if i == 0 {
+			firstNew = prevNew
 		}
-		newTarget = strings.Fields(string(out))[0]
+	}
+	// Read back before any ref moves: Git itself must see both trailers.
+	got, err := gitx.ReadTrailers(c, root, firstNew)
+	if err != nil {
+		return fail(err)
+	}
+	if !contains(got.Intents, intent) || !contains(got.Capsules, addr) {
+		return fail(fmt.Errorf("git does not read the trailers back from the rewritten message"))
 	}
 	if _, err := gitx.Run(c, root, "update-ref", "-m", "chimera capsule attach", "HEAD", prevNew, head); err != nil {
-		return "", err
+		return fail(err)
 	}
-	return newTarget, nil
+	return firstNew, unsigned, nil
+}
+
+func contains(vs []string, want string) bool {
+	for _, v := range vs {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 type whyProof struct {
@@ -547,9 +574,10 @@ func runWhy(c *ctx) error {
 	return nil
 }
 
-// oneLine collapses whitespace and truncates to max runes.
+// oneLine drops control characters, collapses whitespace, and truncates to
+// max runes.
 func oneLine(s string, max int) string {
-	s = strings.Join(strings.Fields(s), " ")
+	s = strings.Join(strings.Fields(ledger.Printable(s)), " ")
 	if r := []rune(s); len(r) > max {
 		return string(r[:max-1]) + "…"
 	}

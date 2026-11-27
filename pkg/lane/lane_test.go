@@ -603,3 +603,101 @@ func TestM1_4_ReportBundleFollowsDesignAndShipsLockedAssets(t *testing.T) {
 		t.Fatal("page is not deterministic")
 	}
 }
+
+// TestM1_4_Ring0DetectionSurvivesGitConfigAndIndexFlags: a harness cannot
+// hide a Ring-0 change behind diff settings, index flags, or filters.
+func TestM1_4_Ring0DetectionSurvivesGitConfigAndIndexFlags(t *testing.T) {
+	dir, base := fixture(t)
+	deps, _ := testDeps(t)
+	deps.Ring0 = func(p string) bool { return strings.HasPrefix(p, "verify/") }
+	tamper := "chmod u+w verify/check.sh && printf '#!/bin/sh\\nexit 0\\n' > verify/check.sh"
+	attacks := map[string]string{
+		"mnemonic-prefix":  "git config diff.mnemonicPrefix true && " + tamper,
+		"no-prefix":        "git config diff.noprefix true && " + tamper,
+		"skip-worktree":    "git update-index --skip-worktree verify/check.sh && " + tamper,
+		"assume-unchanged": "git update-index --assume-unchanged verify/check.sh && " + tamper,
+		"clean-filter":     "git config filter.hide.clean 'git show HEAD:verify/check.sh' && mkdir -p \"$(git rev-parse --git-common-dir)/info\" && echo 'verify/check.sh filter=hide' >> \"$(git rev-parse --git-common-dir)/info/attributes\" && " + tamper,
+	}
+	for name, script := range attacks {
+		// Each attack gets its own repository: some of them write shared config.
+		d, b := dir, base
+		if name != "skip-worktree" {
+			d, b = fixture(t)
+		}
+		c := cell(d, b, name, Command{Argv: []string{"sh", "-c", script}, Timeout: 20 * time.Second})
+		rep := mustRun(t, Plan{ID: "ring0", K: 1, Cells: []Cell{c}}, deps)
+		l := rep.Cells[0].Lanes[0]
+		var ring0 *capsule.Verdict
+		for i := range l.Verdicts {
+			if l.Verdicts[i].ID == "ring0" {
+				ring0 = &l.Verdicts[i]
+			}
+		}
+		if l.Pass || ring0 == nil || ring0.Pass || ring0.Evidence != "changed: verify/check.sh" {
+			t.Errorf("%s: Ring-0 change went undetected: %+v", name, l.Verdicts)
+		}
+	}
+}
+
+func TestM1_4_DiffIsStableUnderAmbientGitConfigAndNonASCIIPaths(t *testing.T) {
+	dir, base := fixture(t)
+	deps, _ := testDeps(t)
+	harness := Command{Argv: []string{"sh", "-c", "echo y > 'é.txt'; echo z > 'ü b/x.txt' 2>/dev/null || (mkdir 'ü b' && echo z > 'ü b/x.txt'); sed -i.bak s/helo/hello/ greet.sh; rm -f greet.sh.bak"}, Timeout: 20 * time.Second}
+	plain := mustRun(t, Plan{ID: "paths", K: 1, Cells: []Cell{cell(dir, base, "unicode", harness)}}, deps).Cells[0].Lanes[0]
+	// The same lane with hostile ambient config gives the same bytes.
+	cfg := filepath.Join(t.TempDir(), "gitconfig")
+	os.WriteFile(cfg, []byte("[diff]\n\tmnemonicPrefix = true\n\trenames = copies\n[core]\n\tquotePath = true\n[color]\n\tui = always\n"), 0o644)
+	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
+	hostile := mustRun(t, Plan{ID: "paths", K: 1, Cells: []Cell{cell(dir, base, "unicode", harness)}}, deps).Cells[0].Lanes[0]
+	if !bytes.Equal(plain.Diff, hostile.Diff) {
+		t.Fatalf("diff depends on ambient git config:\n%s\n---\n%s", plain.Diff, hostile.Diff)
+	}
+	var paths []string
+	for _, tp := range capsule.TouchedPaths(plain.Diff) {
+		if len(tp.Blob) != 40 {
+			t.Errorf("%s: no post-image blob", tp.Path)
+		}
+		paths = append(paths, tp.Path)
+	}
+	if strings.Join(paths, "|") != "greet.sh|é.txt|ü b/x.txt" {
+		t.Fatalf("touched paths: %q", paths)
+	}
+	if bytes.Contains(plain.Diff, []byte{0x1b}) {
+		t.Fatal("escape bytes in the diff")
+	}
+}
+
+func TestM1_4_BackgroundChildDoesNotFailOrOutliveTheLane(t *testing.T) {
+	dir, base := fixture(t)
+	deps, _ := testDeps(t)
+	marker := filepath.Join(t.TempDir(), "still-alive")
+	// The harness leaves a child holding its stdout; after 3s the child would
+	// touch the marker if it were still running.
+	script := fmt.Sprintf("(sleep 3; touch %s) & sed -i.bak s/helo/hello/ greet.sh; rm -f greet.sh.bak; echo done", marker)
+	rep := mustRun(t, Plan{ID: "bg", K: 1, Cells: []Cell{cell(dir, base, "bg", Command{Argv: []string{"sh", "-c", script}, Timeout: 30 * time.Second})}}, deps)
+	l := rep.Cells[0].Lanes[0]
+	if !l.Pass || l.Capsule == "" {
+		t.Fatalf("a harness that leaves a child behind was failed: %+v", l.Verdicts)
+	}
+	for _, v := range l.Verdicts {
+		if v.ID == "harness" {
+			t.Fatalf("spurious harness verdict: %+v", v)
+		}
+	}
+	time.Sleep(3500 * time.Millisecond)
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the harness's background child outlived the lane")
+	}
+}
+
+func TestM1_4_LaneWithoutCapsuleCountsAsFailedCriterion(t *testing.T) {
+	cr := CellReport{K: 3, Lanes: []LaneReport{
+		{K: 1, Capsule: "sha256:x", Pass: true, WallMS: 10, Verdicts: []capsule.Verdict{{ID: "a", Criterion: "c", Pass: true}}},
+		{K: 2, Error: "runner boat: boat new failed"},
+		{K: 3, Error: "secret gate: 1 findings"},
+	}}
+	summarize(&cr)
+	if fmt.Sprintf("%.2f %d/%d", cr.PassRate, cr.AllPass, cr.K) != "0.33 1/3" || cr.CostUSD != nil || cr.WallP50MS != 10 {
+		t.Fatalf("%+v", cr)
+	}
+}

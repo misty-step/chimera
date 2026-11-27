@@ -142,7 +142,9 @@ func ReadTrailers(ctx context.Context, dir, commit string) (Trailers, error) {
 // WithTrailers returns msg with both Chimera trailers added, Intent first,
 // using git interpret-trailers. A pair already present is not repeated.
 func WithTrailers(ctx context.Context, dir, msg, intent, capsule string) (string, error) {
-	out, err := RunInput(ctx, dir, []byte(msg), nil, "interpret-trailers", "--if-exists", "addIfDifferent",
+	// --no-divider: a commit message is not a patch, so a "---" line in its
+	// body does not end it; trailers go at the very end.
+	out, err := RunInput(ctx, dir, []byte(msg), nil, "interpret-trailers", "--no-divider", "--if-exists", "addIfDifferent",
 		"--trailer", TrailerIntent+": "+intent, "--trailer", TrailerCapsule+": "+capsule)
 	if err != nil {
 		return "", err
