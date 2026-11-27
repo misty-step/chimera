@@ -6,112 +6,208 @@
       "repo": "chimera",
       "title": "Terminal walkthrough: tenant-leak lint exits 0 with 0 findings, CLI usage errors exit 2 with chimera.error/v1, ring0 lock and verify",
       "localPath": "media/cli-walkthrough.mp4",
-      "mediaType": "video/mp4"
+      "mediaType": "video/mp4",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-1]",
       "repo": "chimera",
-      "title": "Walkthrough transcript: every command, its output, and its checked exit code — 89 in the Milestone 1 sections, 140 in all, 0 mismatches",
+      "title": "Walkthrough transcript: every command, its output, and its checked exit code — 93 in the Milestone 1 sections, 123 in all, 0 mismatches",
       "localPath": "media/cli-walkthrough.txt",
-      "mediaType": "text/plain"
+      "mediaType": "text/plain",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-1]",
       "repo": "chimera",
-      "title": "go test -count=1 -race ./... with every TestM1_* result",
+      "title": "go test -count=1 -race -v ./... with every TestM1_* result (capabilities dropped, so mode-000 cases run)",
       "localPath": "media/go-test.txt",
-      "mediaType": "text/plain"
+      "mediaType": "text/plain",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-2]",
       "repo": "chimera",
       "title": "Terminal walkthrough: capsule pack, push, get, write, read, verify, attach, and why against the loopback S3 fake",
       "localPath": "media/cli-walkthrough.mp4",
-      "mediaType": "video/mp4"
+      "mediaType": "video/mp4",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-2]",
       "repo": "chimera",
       "title": "Walkthrough transcript: secret gate refuses with zero requests; unreachable store exits 3",
       "localPath": "media/cli-walkthrough.txt",
-      "mediaType": "text/plain"
+      "mediaType": "text/plain",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-3]",
       "repo": "chimera",
       "title": "Terminal walkthrough: ledger rebuild, status, query, preflight; incremental index equals rebuild",
       "localPath": "media/cli-walkthrough.mp4",
-      "mediaType": "video/mp4"
+      "mediaType": "video/mp4",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-3]",
       "repo": "chimera",
-      "title": "Final terminal frame: pre-flight within the 2048-byte bound, the Ledger digest, and the summary of 140 checked exit codes",
+      "title": "Final terminal frame: pre-flight within the 2048-byte bound (269 bytes), the Ledger digest, and the summary of 123 checked exit codes",
       "localPath": "media/cli-walkthrough-final.png",
-      "mediaType": "image/png"
+      "mediaType": "image/png",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-4]",
       "repo": "chimera",
       "title": "Terminal walkthrough: chimera run (with and without --apply) and chimera bench K=3",
       "localPath": "media/cli-walkthrough.mp4",
-      "mediaType": "video/mp4"
+      "mediaType": "video/mp4",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-4]",
       "repo": "chimera",
       "title": "Static bench report bundle written by chimera bench --html",
       "localPath": "media/bench-report/index.html",
-      "mediaType": "text/html"
+      "mediaType": "text/html",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-4]",
       "repo": "chimera",
       "title": "Headed Chrome, 1440x900, light: index navigation, FAIL verdict to transcript line, lane drill-down, keyboard focus",
       "localPath": "media/report-desktop.webm",
-      "mediaType": "video/webm"
+      "mediaType": "video/webm",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-4]",
       "repo": "chimera",
       "title": "Headed Chrome, 390x844, dark: the same reader stories on a phone viewport",
       "localPath": "media/report-mobile.webm",
-      "mediaType": "video/webm"
+      "mediaType": "video/webm",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-4]",
       "repo": "chimera",
-      "title": "Browser checks: 441 passed, 0 failed across 1440x900 and 390x844, light and dark, HTTP and file",
+      "title": "Browser checks: 736 passed, 0 failed across 1440x900 and 390x844, light and dark, HTTP and file",
       "localPath": "media/report-browser-checks.json",
-      "mediaType": "application/json"
+      "mediaType": "application/json",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-4]",
       "repo": "chimera",
       "title": "Bench report, desktop, light",
       "localPath": "media/report-desktop-light-05-full.png",
-      "mediaType": "image/png"
+      "mediaType": "image/png",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-4]",
       "repo": "chimera",
       "title": "Bench report, desktop, dark",
       "localPath": "media/report-desktop-dark-05-full.png",
-      "mediaType": "image/png"
+      "mediaType": "image/png",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-4]",
       "repo": "chimera",
       "title": "Bench report, phone, light",
       "localPath": "media/report-mobile-light-05-full.png",
-      "mediaType": "image/png"
+      "mediaType": "image/png",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M1-4]",
       "repo": "chimera",
       "title": "Bench report, phone, dark",
       "localPath": "media/report-mobile-dark-05-full.png",
-      "mediaType": "image/png"
+      "mediaType": "image/png",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     },
     {
       "requirementId": "[M2-1]",
@@ -266,6 +362,123 @@
       "title": "go test -count=1 -race -v ./... with every TestM1_* and TestM2_* result",
       "localPath": "media/go-test.txt",
       "mediaType": "text/plain"
+    },
+    {
+      "requirementId": "[M2-4]",
+      "repo": "chimera",
+      "title": "Terminal walkthrough: chimera lint observability — pass on a web+worker and a Go service fixture, not-applicable on a library and on chimera itself, exit 1 for missing health, telemetry, and CSP capture, --json chimera.lint/v1, observability.allow opt-out, --strict fail-closed on a FIFO, mode-000 file and directory, and a truncated scan",
+      "localPath": "media/cli-walkthrough.mp4",
+      "mediaType": "video/mp4",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
+    },
+    {
+      "requirementId": "[M2-4]",
+      "repo": "chimera",
+      "title": "Walkthrough transcript: the 30 [M2-4] commands with checked exit codes, 0 mismatches",
+      "localPath": "media/cli-walkthrough.txt",
+      "mediaType": "text/plain",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
+    },
+    {
+      "requirementId": "[M2-4]",
+      "repo": "chimera",
+      "title": "go test -count=1 -race -v ./... with every TestM2_4_* result",
+      "localPath": "media/go-test.txt",
+      "mediaType": "text/plain",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
+    },
+    {
+      "requirementId": "[M2-4]",
+      "repo": "chimera",
+      "title": "chimera lint observability --json on the served demo app: status pass, 0 findings",
+      "localPath": "media/obs-lint-pass.json",
+      "mediaType": "application/json",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
+    },
+    {
+      "requirementId": "[M2-4]",
+      "repo": "chimera",
+      "title": "Headed Chrome, 1440x900, light: the same-origin beacon pattern under wrangler dev — error, unhandledrejection, and a CSP-blocked image each POST to /api/client-errors on the page origin and reach the local sink as an envelope with release and environment",
+      "localPath": "media/obs-beacon-desktop.webm",
+      "mediaType": "video/webm",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
+    },
+    {
+      "requirementId": "[M2-4]",
+      "repo": "chimera",
+      "title": "Headed Chrome, 390x844, dark: the same beacon stories on a phone viewport",
+      "localPath": "media/obs-beacon-mobile.webm",
+      "mediaType": "video/webm",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
+    },
+    {
+      "requirementId": "[M2-4]",
+      "repo": "chimera",
+      "title": "/api/health on the served demo: status ok, environment, release",
+      "localPath": "media/obs-beacon-desktop-health.png",
+      "mediaType": "image/png",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
+    },
+    {
+      "requirementId": "[M2-4]",
+      "repo": "chimera",
+      "title": "Envelopes received by the local sink, each carrying release and environment",
+      "localPath": "media/obs-beacon-desktop-sink.png",
+      "mediaType": "image/png",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
+    },
+    {
+      "requirementId": "[M2-4]",
+      "repo": "chimera",
+      "title": "Browser checks: 92 passed, 1 failed (Chrome's implicit /favicon.ico on the raw JSON health page, a demo-app 404) — 0 off-machine requests, CSP never loosened",
+      "localPath": "media/obs-beacon-checks.json",
+      "mediaType": "application/json",
+      "verifiedSha": "e9f301e42a33274f7ed6e7cf6ace0f1e894c8b44",
+      "verifiedAt": "2026-11-27T11:00:33Z",
+      "verdict": "PASS_WITH_MINOR_FINDINGS",
+      "verifiedBy": "builder",
+      "criticVerdict": "pending",
+      "evidenceRef": "https://github.com/misty-step/chimera/pull/5 (branch reconcile/5e57789b, evidence dir media/)"
     }
   ]
 }
