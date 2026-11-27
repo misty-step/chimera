@@ -16,7 +16,8 @@ import (
 
 // trailCSS is appended to the reference stylesheet for what a generated
 // Trail adds to the reference rendering (DESIGN.md §2.1, §2.5): the empty
-// section row, video, more than one figure, and elided transcript runs.
+// section row, video, more than one figure, elided transcript runs, and
+// transcript lines that wrap inside themselves however long their tokens.
 // Tokens and every other rule come from the Folio's trail.css unchanged.
 const trailCSS = `
 /* chimera / trail — generated pages: empty rows, video, elided transcript (DESIGN.md §2.1, §2.5). */
@@ -25,6 +26,8 @@ figure + figure { margin-top: 32px; }
 figure video { max-width: 100%; height: auto; border: 1px solid var(--rule); display: block; }
 .transcript li.gap { color: var(--muted); }
 td .muted { font-size: 0.75rem; }
+/* A long unbroken token (a URL, a JSON blob) wraps inside its line instead of widening the page (DESIGN.md §2.4). */
+.transcript code { min-width: 0; overflow-wrap: anywhere; }
 `
 
 type pageLink struct{ Href, Text string }

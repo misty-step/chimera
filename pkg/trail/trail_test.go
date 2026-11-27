@@ -616,6 +616,11 @@ func TestM2_1_BundleShipsLockedAssetsAndCapsuleMediaByteExact(t *testing.T) {
 	if !bytes.HasPrefix(css, refCSS) || !bytes.Contains(css[len(refCSS):], []byte("p.none {")) {
 		t.Error("trail.css is not the reference stylesheet plus the trail rules")
 	}
+	// A transcript line wraps inside itself: one long token (a URL, a JSON
+	// blob) must not widen the page past a phone's viewport (DESIGN.md §2.4).
+	if !bytes.Contains(css[len(refCSS):], []byte(".transcript code { min-width: 0; overflow-wrap: anywhere; }")) {
+		t.Error("trail.css lets a long transcript token widen the page")
+	}
 	extra := string(css[len(refCSS):])
 	for _, banned := range []string{"#", "rgb", "shadow", "gradient", "Inter", "http", "@import", "border-radius"} {
 		if strings.Contains(extra, banned) {

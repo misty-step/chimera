@@ -536,6 +536,11 @@ func TestM1_4_ReportBundleFollowsDesignAndShipsLockedAssets(t *testing.T) {
 	if !bytes.HasPrefix(css, ref) || !bytes.Contains(css[len(ref):], []byte(".best { font-weight: 600; }")) {
 		t.Error("trail.css is not the reference stylesheet plus the bench rules")
 	}
+	// A transcript line wraps inside itself: one long token (a URL, a JSON
+	// blob) must not widen the page past a phone's viewport (DESIGN.md §2.4).
+	if !bytes.Contains(css[len(ref):], []byte(".transcript code { min-width: 0; overflow-wrap: anywhere; }")) {
+		t.Error("trail.css lets a long transcript token widen the page")
+	}
 	if bytes.Contains(bytes.ToLower(css), []byte("inter")) && bytes.Contains(css, []byte(`"Inter"`)) {
 		t.Error("Inter in the font stack")
 	}
