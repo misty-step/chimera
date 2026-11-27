@@ -332,6 +332,31 @@ guard; triage inbox for everyone else) and `web/chimera-nit`. Tests: an unsigned
 reaches the classifier; the daily cap holds; a nit from a Chimera preview origin is dropped; a Folio-only PR
 never touches paths outside the fence.
 
+**[M2-4] Observability & Auto-Triage Readiness (`chimera lint observability`).**
+- Every deployed web, worker, or service repository reconciled or landed by Chimera is observable by default,
+  without per-project instructions: a production failure reaches the operator's sink carrying enough identity
+  to be triaged automatically.
+- `chimera lint observability [<dir>] [--strict] [--json]`, under the existing `lint` noun, deterministically
+  audits a repository (`<dir>`, default the current directory) whenever a web app, worker, or HTTP service
+  surface is detected. It exits `0` reporting `not-applicable` on a pure library or CLI, and on a repository
+  explicitly opted out in `chimera.yaml` under `observability.allow`. Three baseline invariants:
+  1. **Health & release identity.** A real `/healthz` or `/api/health` route returning runtime and release
+     status, not a hardcoded stub.
+  2. **Production telemetry & server error capture.** Worker or service observability configuration (for
+     example `observability.enabled` on an edge worker), or structured server-side error and exception
+     forwarding wired to an operator-configured sink. The sink's DSN or endpoint is supplied solely by runtime
+     env and is never committed.
+  3. **Client error & CSP capture (web surfaces).** Browser `error`, `unhandledrejection`, and
+     `securitypolicyviolation` listeners forwarding scrubbed events, preferring a same-origin beacon endpoint
+     when a strict `connect-src 'self'` CSP applies. Zero external browser dependencies are required.
+- An unmet invariant exits `1`, printing `path:line:col rule-id` per finding or, with `--json`, structured
+  `chimera.lint/v1` findings. With `--strict` the audit fails closed: an unreadable directory or file, or a
+  truncated scan, exits `1` the same way.
+- Zero new Go dependencies: the standard library only, per §4.
+- Tests (`TestM2_4_*`): a passing web+worker repo, including the same-origin beacon pattern, exits `0`; a repo
+  missing health, telemetry, or CSP forwarding exits `1`; a pure CLI library exits `0` (`not-applicable`); an
+  `observability.allow` opt-out is honored; an unreadable directory or file fails closed under `--strict`.
+
 ---
 
 ## 7. Non-goals
