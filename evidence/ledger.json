@@ -2,35 +2,116 @@
   "schemaVersion": 1,
   "entries": [
     {
-      "requirementId": "M1-1",
-      "intent": "folio:7f50448c688da1ffcd94e38b975abe9d8e388bf3bbb949309353ce78438d6047",
-      "intentRange": "82c04f261d68123e45493d550ce663f93f761fe4..4dc031deec83feef04d9c45dbf76ec46ccb6d25d",
-      "verifiedSha": "ee80089da549d34ada0195b7bca4098cd42cf8ca",
-      "verifiedAt": "2026-11-26T19:58:20Z",
-      "criticVerdict": "PENDING",
-      "summary": "chimera version/lint tenant-leak/ring0 lock|verify built from the verified SHA and exercised in a real terminal; 28 TestM1_1_* tests pass under -race.",
-      "evidence": [
-        { "localPath": "media/cli-walkthrough.mp4", "artifactUrl": null, "mediaType": "video/mp4" },
-        { "localPath": "media/cli-walkthrough.txt", "artifactUrl": null, "mediaType": "text/plain" },
-        { "localPath": "media/cli-walkthrough-final.png", "artifactUrl": null, "mediaType": "image/png" },
-        { "localPath": "media/go-test.txt", "artifactUrl": null, "mediaType": "text/plain" }
-      ]
+      "requirementId": "[M1-1]",
+      "repo": "chimera",
+      "title": "Terminal walkthrough: tenant-leak lint exits 0 with 0 findings, CLI usage errors exit 2 with chimera.error/v1, ring0 lock and verify",
+      "localPath": "media/cli-walkthrough.mp4",
+      "mediaType": "video/mp4"
     },
     {
-      "requirementId": "folio/assets/trail-reference",
-      "intent": "folio:7f50448c688da1ffcd94e38b975abe9d8e388bf3bbb949309353ce78438d6047",
-      "intentRange": "82c04f261d68123e45493d550ce663f93f761fe4..4dc031deec83feef04d9c45dbf76ec46ccb6d25d",
-      "verifiedSha": "ee80089da549d34ada0195b7bca4098cd42cf8ca",
-      "verifiedAt": "2026-11-26T19:58:20Z",
-      "criticVerdict": "PENDING",
-      "summary": "Locked favicon.svg (sha256 dc98e47e34fa87a7856088769013bd5a3ec2a631fbece9190cb8d6e7e165d7d5) and media/capsule-write.svg (sha256 a778295fb943d0e0ca073862e67fad39b140a1c0ac84e49993316b85234ba289) unchanged and served byte-identical; reference Trail page passes headed Chrome checks at 1440x900 and 390x844.",
-      "evidence": [
-        { "localPath": "media/trail-desktop.webm", "artifactUrl": null, "mediaType": "video/webm" },
-        { "localPath": "media/trail-mobile.webm", "artifactUrl": null, "mediaType": "video/webm" },
-        { "localPath": "media/trail-browser-report.json", "artifactUrl": null, "mediaType": "application/json" },
-        { "localPath": "media/trail-desktop-01-top.png", "artifactUrl": null, "mediaType": "image/png" },
-        { "localPath": "media/trail-mobile-01-top.png", "artifactUrl": null, "mediaType": "image/png" }
-      ]
+      "requirementId": "[M1-1]",
+      "repo": "chimera",
+      "title": "Walkthrough transcript: every command, its output, and 64 checked exit codes",
+      "localPath": "media/cli-walkthrough.txt",
+      "mediaType": "text/plain"
+    },
+    {
+      "requirementId": "[M1-1]",
+      "repo": "chimera",
+      "title": "go test -count=1 -race ./... with every TestM1_* result",
+      "localPath": "media/go-test.txt",
+      "mediaType": "text/plain"
+    },
+    {
+      "requirementId": "[M1-2]",
+      "repo": "chimera",
+      "title": "Terminal walkthrough: capsule pack, push, get, write, read, verify, attach, and why against the loopback S3 fake",
+      "localPath": "media/cli-walkthrough.mp4",
+      "mediaType": "video/mp4"
+    },
+    {
+      "requirementId": "[M1-2]",
+      "repo": "chimera",
+      "title": "Walkthrough transcript: secret gate refuses with zero requests; unreachable store exits 3",
+      "localPath": "media/cli-walkthrough.txt",
+      "mediaType": "text/plain"
+    },
+    {
+      "requirementId": "[M1-3]",
+      "repo": "chimera",
+      "title": "Terminal walkthrough: ledger rebuild, status, query, preflight; incremental index equals rebuild",
+      "localPath": "media/cli-walkthrough.mp4",
+      "mediaType": "video/mp4"
+    },
+    {
+      "requirementId": "[M1-3]",
+      "repo": "chimera",
+      "title": "Final terminal frame: preflight with failure signature, 2048-byte bound, canonical dump digest",
+      "localPath": "media/cli-walkthrough-final.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M1-4]",
+      "repo": "chimera",
+      "title": "Terminal walkthrough: chimera run (with and without --apply) and chimera bench K=3",
+      "localPath": "media/cli-walkthrough.mp4",
+      "mediaType": "video/mp4"
+    },
+    {
+      "requirementId": "[M1-4]",
+      "repo": "chimera",
+      "title": "Static bench report bundle written by chimera bench --html",
+      "localPath": "media/bench-report/index.html",
+      "mediaType": "text/html"
+    },
+    {
+      "requirementId": "[M1-4]",
+      "repo": "chimera",
+      "title": "Headed Chrome, 1440x900: index navigation, FAIL verdict to transcript line, lane drill-down, keyboard focus",
+      "localPath": "media/report-desktop.webm",
+      "mediaType": "video/webm"
+    },
+    {
+      "requirementId": "[M1-4]",
+      "repo": "chimera",
+      "title": "Headed Chrome, 390x844: the same reader stories on a phone viewport",
+      "localPath": "media/report-mobile.webm",
+      "mediaType": "video/webm"
+    },
+    {
+      "requirementId": "[M1-4]",
+      "repo": "chimera",
+      "title": "Browser checks: 239 passed, 0 failed across 1440x900 and 390x844, light and dark, HTTP and file",
+      "localPath": "media/report-browser-checks.json",
+      "mediaType": "application/json"
+    },
+    {
+      "requirementId": "[M1-4]",
+      "repo": "chimera",
+      "title": "Bench report, desktop, light",
+      "localPath": "media/report-desktop-light-05-full.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M1-4]",
+      "repo": "chimera",
+      "title": "Bench report, desktop, dark",
+      "localPath": "media/report-desktop-dark-05-full.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M1-4]",
+      "repo": "chimera",
+      "title": "Bench report, phone, light",
+      "localPath": "media/report-mobile-light-05-full.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M1-4]",
+      "repo": "chimera",
+      "title": "Bench report, phone, dark",
+      "localPath": "media/report-mobile-dark-05-full.png",
+      "mediaType": "image/png"
     }
   ]
 }
