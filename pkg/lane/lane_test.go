@@ -765,3 +765,11 @@ func TestM2_2_VerifyOnlyLaneJudgesTheTreeWithoutAHarness(t *testing.T) {
 		t.Fatalf("verify-only lane changed the tree:\n%s", l.Diff)
 	}
 }
+
+func TestM1_4_ScrollContainersTakeTheAccentFocusRing(t *testing.T) {
+	// A wide Bench table scrolls inside its container at 390px, which makes the
+	// container a keyboard stop; DESIGN.md §2.6 wants the 2px accent ring there.
+	if !strings.Contains(benchCSS, ".scroll:focus-visible { outline: 2px solid var(--accent);") {
+		t.Fatal("benchCSS has no accent focus ring for .scroll")
+	}
+}

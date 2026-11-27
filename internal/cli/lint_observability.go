@@ -113,7 +113,7 @@ func runLintObservability(c *ctx) error {
 			code:   ExitError,
 			object: shown,
 			msg:    fmt.Sprintf("%d findings (rule %s)", len(findings), strings.Join(ruleList(findings), ", ")),
-			next:   "restore the missing observability or waive the rule in observability.allow",
+			next:   obsNext(findings),
 			noJSON: true, // the chimera.lint/v1 object above is the data
 		}
 	}
@@ -166,4 +166,15 @@ func pathErrText(err error) string {
 		return pe.Err.Error()
 	}
 	return err.Error()
+}
+
+// obsNext is the error line's next action. Scan problems (--strict) cannot be
+// waived in observability.allow; only unmet invariants can.
+func obsNext(findings []obslint.Finding) string {
+	for _, f := range findings {
+		if f.Invariant != "scan" {
+			return "restore the missing observability or waive the rule in observability.allow"
+		}
+	}
+	return "make every entry readable, or run without --strict"
 }

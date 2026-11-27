@@ -202,6 +202,9 @@ func TestM2_4_StrictFailsClosedOnUnreadableDirectoryOrFile(t *testing.T) {
 				t.Fatalf("--strict: %+v", r)
 			}
 			oneLowercaseErrorLine(t, nil, r.stderr)
+			if r.stdout == tc.want && !strings.HasSuffix(r.stderr, "; make every entry readable, or run without --strict\n") {
+				t.Fatalf("a scan problem cannot be waived; the hint must not say so: %q", r.stderr)
+			}
 			r = run(t, dir, nil, "lint", "observability", "--strict", "--json")
 			j := decodeObs(t, r.stdout)
 			if r.code != ExitError || j.Status != "fail" || len(j.Skipped) != 0 {
@@ -270,5 +273,20 @@ func TestM2_4_OutputIsByteStable(t *testing.T) {
 	b := run(t, dir, nil, "lint", "observability", "--json")
 	if a != b || a.code != ExitError {
 		t.Fatalf("%+v\n%+v", a, b)
+	}
+}
+
+func TestM1_1_ErrorLineKeepsAnAllCapsFirstWord(t *testing.T) {
+	for in, want := range map[string]string{
+		"GET cas/x: no answer from the store": "GET cas/x: no answer from the store",
+		"PUT a: 412":                          "PUT a: 412",
+		"Cannot read":                         "cannot read",
+		"A file":                              "a file",
+		"X":                                   "x",
+		"":                                    "",
+	} {
+		if got := lower(in); got != want {
+			t.Errorf("lower(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

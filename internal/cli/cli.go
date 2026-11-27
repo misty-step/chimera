@@ -100,10 +100,10 @@ var commands = []*command{
 		Summary: "audit health, telemetry, and client error capture",
 		Detail: []string{
 			"When <dir> (default .) has a web, worker, or HTTP service surface, checks:",
-			"health   a /healthz or /api/health route reporting status and a runtime release",
-			"telemetry  observability.enabled, or server errors sent to an env-supplied sink",
-			"client   error, unhandledrejection, securitypolicyviolation listeners that",
-			"         forward, via a same-origin beacon under connect-src 'self'",
+			"  health     a /healthz or /api/health route reporting status and release",
+			"  telemetry  observability.enabled, or server errors to an env-supplied sink",
+			"  client     error, unhandledrejection, securitypolicyviolation listeners",
+			"             that forward, same-origin under connect-src 'self'",
 			"Prints path:line:col rule-id per finding; --json emits chimera.lint/v1.",
 			"Exits 0 not-applicable without a surface or with observability.allow: [\"*\"].",
 			"--strict exits 1 on an unreadable directory or file or a truncated scan.",
@@ -715,8 +715,14 @@ type errorJSON struct {
 	Findings any    `json:"findings"`
 }
 
+// lower lowercases the first letter of a message, unless the first word is
+// an all-caps token such as an HTTP method ("GET cas/…"), which stays as is.
 func lower(s string) string {
 	if s == "" {
+		return s
+	}
+	word, _, _ := strings.Cut(s, " ")
+	if len(word) > 1 && strings.ToUpper(word) == word && strings.ToLower(word) != word {
 		return s
 	}
 	return strings.ToLower(s[:1]) + s[1:]
