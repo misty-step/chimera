@@ -53,6 +53,8 @@ type Cell struct {
 	Lane    capsule.LaneConfig
 	Harness Command
 	Price   *Price
+	// VerifyOnly runs the verifier alone on the fixture's tree (no harness).
+	VerifyOnly bool
 }
 
 // Hash identifies the cell: 12 hex characters over its Intent and LaneConfig.
@@ -275,7 +277,7 @@ func Run(ctx context.Context, plan Plan, deps Deps) (*Report, error) {
 			spec := Spec{
 				Intent: cell.Fixture.Intent, Repo: cell.Fixture.Repo, RepoDir: cell.Fixture.RepoDir, BaseSHA: cell.Fixture.BaseSHA,
 				Lane: cell.Lane, Brief: cell.Fixture.Brief, Harness: cell.Harness, Verifier: cell.Fixture.Verifier,
-				Tags: tags, Env: deps.Env, Ring0: deps.Ring0, Price: cell.Price, Now: deps.Now,
+				Tags: tags, Env: deps.Env, Ring0: deps.Ring0, Price: cell.Price, Now: deps.Now, VerifyOnly: cell.VerifyOnly,
 			}
 			if deps.Scent != nil && strings.HasPrefix(cell.Lane.ContextPolicy, "push") {
 				spec.Scent = deps.Scent(ctx, cell)

@@ -11,7 +11,7 @@
     {
       "requirementId": "[M1-1]",
       "repo": "chimera",
-      "title": "Walkthrough transcript: every command, its output, and 64 checked exit codes",
+      "title": "Walkthrough transcript: every command, its output, and its checked exit code — 89 in the Milestone 1 sections, 140 in all, 0 mismatches",
       "localPath": "media/cli-walkthrough.txt",
       "mediaType": "text/plain"
     },
@@ -46,7 +46,7 @@
     {
       "requirementId": "[M1-3]",
       "repo": "chimera",
-      "title": "Final terminal frame: preflight with failure signature, 2048-byte bound, canonical dump digest",
+      "title": "Final terminal frame: pre-flight within the 2048-byte bound, the Ledger digest, and the summary of 140 checked exit codes",
       "localPath": "media/cli-walkthrough-final.png",
       "mediaType": "image/png"
     },
@@ -67,21 +67,21 @@
     {
       "requirementId": "[M1-4]",
       "repo": "chimera",
-      "title": "Headed Chrome, 1440x900: index navigation, FAIL verdict to transcript line, lane drill-down, keyboard focus",
+      "title": "Headed Chrome, 1440x900, light: index navigation, FAIL verdict to transcript line, lane drill-down, keyboard focus",
       "localPath": "media/report-desktop.webm",
       "mediaType": "video/webm"
     },
     {
       "requirementId": "[M1-4]",
       "repo": "chimera",
-      "title": "Headed Chrome, 390x844: the same reader stories on a phone viewport",
+      "title": "Headed Chrome, 390x844, dark: the same reader stories on a phone viewport",
       "localPath": "media/report-mobile.webm",
       "mediaType": "video/webm"
     },
     {
       "requirementId": "[M1-4]",
       "repo": "chimera",
-      "title": "Browser checks: 239 passed, 0 failed across 1440x900 and 390x844, light and dark, HTTP and file",
+      "title": "Browser checks: 441 passed, 0 failed across 1440x900 and 390x844, light and dark, HTTP and file",
       "localPath": "media/report-browser-checks.json",
       "mediaType": "application/json"
     },
@@ -112,6 +112,160 @@
       "title": "Bench report, phone, dark",
       "localPath": "media/report-mobile-dark-05-full.png",
       "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Terminal walkthrough: chimera trail on a four-commit history (text, --check exit 1, 3 and 0, --json, --html), then Land",
+      "localPath": "media/cli-walkthrough.mp4",
+      "mediaType": "video/mp4"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Walkthrough transcript: every Trail and Land command, its output, and 48 checked exit codes",
+      "localPath": "media/cli-walkthrough.txt",
+      "mediaType": "text/plain"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Trail page in headed Chrome, desktop light: verdict drill-down, capsule video playing",
+      "localPath": "media/trail-desktop-light.webm",
+      "mediaType": "video/webm"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Trail page in headed Chrome, phone dark",
+      "localPath": "media/trail-mobile-dark.webm",
+      "mediaType": "video/webm"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Trail page, desktop 1440x900, light, full page",
+      "localPath": "media/trail-desktop-light-02-full.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Trail page, desktop, dark: one click from a failing verdict to its transcript line",
+      "localPath": "media/trail-desktop-dark-03-verdict-drilldown.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Trail page, phone 390x844, light, full page",
+      "localPath": "media/trail-mobile-light-02-full.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Trail page, phone, dark: capsule media playing",
+      "localPath": "media/trail-mobile-dark-05-media-playing.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "The generated Trail bundle itself (index.html, trail.css, fonts, media)",
+      "localPath": "media/trail-page/index.html",
+      "mediaType": "text/html"
+    },
+    {
+      "requirementId": "[M2-2]",
+      "repo": "chimera",
+      "title": "Terminal walkthrough: five agent branches enqueued, two land after post-rebase verification, three evicted with reasons; a second lander fences the first",
+      "localPath": "media/cli-walkthrough.mp4",
+      "mediaType": "video/mp4"
+    },
+    {
+      "requirementId": "[M2-2]",
+      "repo": "chimera",
+      "title": "Final frame of the terminal walkthrough, captured before the terminal closed",
+      "localPath": "media/cli-walkthrough-final.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "<chimera-nit> in headed Chrome, desktop light: pick an element, send as owner (QUEUED, SENT) and signed out (RECEIVED)",
+      "localPath": "media/nit-desktop-light.webm",
+      "mediaType": "video/webm"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "<chimera-nit> in headed Chrome, phone dark",
+      "localPath": "media/nit-mobile-dark.webm",
+      "mediaType": "video/webm"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "<chimera-nit> form with the captured selector, desktop light",
+      "localPath": "media/nit-desktop-light-intent-form.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "<chimera-nit> on a 390x844 phone, dark: the form with the captured selector",
+      "localPath": "media/nit-mobile-dark-intent-form.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "<chimera-nit> on a 390x844 phone, dark: a violation nit sent as owner, status SENT",
+      "localPath": "media/nit-mobile-dark-violation-sent.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "Terminal walkthrough: the Folio-only branch, task Intents, triage inbox, the guards (origin, media type, loop guard, path fence, daily cap, rate limit), six nits in one debounce window on the real timer, and Close draining a flush in flight",
+      "localPath": "media/inlet-walkthrough.mp4",
+      "mediaType": "video/mp4"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "Walkthrough transcript: 48 checked commands against the hosted inlet handler",
+      "localPath": "media/inlet-walkthrough.txt",
+      "mediaType": "text/plain"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "Coalescer lifecycle: what Close and Pending did before and after the fix, with the measurements from the running handler",
+      "localPath": "media/coalescer-close-drain.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "Receipts: the debounce and Coalescer tests, 10 runs under -race — 10 of 10 failing before the fix, 50 of 50 passing after",
+      "localPath": "media/coalescer-test-receipts.txt",
+      "mediaType": "text/plain"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "Headed-Chrome report: 762 checks, 0 failed — 473 on the Trail page, 289 on <chimera-nit> — over both viewports, light and dark",
+      "localPath": "media/browser-report.json",
+      "mediaType": "application/json"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "go test -count=1 -race -v ./... with every TestM1_* and TestM2_* result",
+      "localPath": "media/go-test.txt",
+      "mediaType": "text/plain"
     }
   ]
 }

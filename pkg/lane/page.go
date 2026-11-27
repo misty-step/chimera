@@ -15,14 +15,17 @@ import (
 )
 
 // benchCSS is appended to the reference stylesheet for the components the
-// Bench page adds (DESIGN.md §2.5). Tokens and every other rule come from
-// the Folio's trail.css unchanged.
+// Bench page adds (DESIGN.md §2.5), and for what real transcripts need that
+// the reference rendering's short lines do not: wrapping inside a line.
+// Tokens and every other rule come from the Folio's trail.css unchanged.
 const benchCSS = `
 /* chimera / bench — Bench table and empty-section rows (DESIGN.md §2.1, §2.5). */
 .best { font-weight: 600; }
 caption { text-align: left; font-size: 0.875rem; color: var(--muted); padding: 0 0 8px; }
 .scroll + .scroll { margin-top: 32px; }
 p.none { margin: 0; padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 0.875rem; color: var(--muted); }
+/* A long unbroken token (a URL, a JSON blob) wraps inside its line instead of widening the page (DESIGN.md §2.4). */
+.transcript code { min-width: 0; overflow-wrap: anywhere; }
 `
 
 // lockedAssets are copied into every report byte-for-byte.
@@ -35,6 +38,10 @@ var lockedAssets = []string{
 	"fonts/ibm-plex-sans-latin-400-normal.woff2",
 	"fonts/ibm-plex-sans-latin-600-normal.woff2",
 }
+
+// LockedAssets returns the names of the Folio assets every report bundle
+// ships byte-for-byte, relative to the bundle root.
+func LockedAssets() []string { return append([]string{}, lockedAssets...) }
 
 // FormatDuration renders milliseconds for humans: 1.42s, 3m07s.
 func FormatDuration(ms int64) string {
@@ -447,7 +454,11 @@ func markBest(rows []pageBenchRow, rep *Report, fixture string) {
 	if len(cells) == 0 {
 		return
 	}
-	bestRate, bestX, bestP50, bestP90 := cells[0].PassRate, cells[0].AllPass, cells[0].WallP50MS, cells[0].WallP90MS
+	// A wall time or a cost is only "best" for a cell that passed at least
+	// once: the fastest or cheapest way to fail everything is not an
+	// achievement to set in weight 600. A column whose best is zero has none.
+	bestRate, bestX := cells[0].PassRate, cells[0].AllPass
+	bestP50, bestP90 := int64(-1), int64(-1)
 	var bestCost *float64
 	for _, c := range cells {
 		if c.PassRate > bestRate {
@@ -456,22 +467,24 @@ func markBest(rows []pageBenchRow, rep *Report, fixture string) {
 		if c.AllPass > bestX {
 			bestX = c.AllPass
 		}
-		if c.WallP50MS < bestP50 {
-			bestP50 = c.WallP50MS
+		if c.AllPass > 0 {
+			if bestP50 < 0 || c.WallP50MS < bestP50 {
+				bestP50 = c.WallP50MS
+			}
+			if bestP90 < 0 || c.WallP90MS < bestP90 {
+				bestP90 = c.WallP90MS
+			}
 		}
-		if c.WallP90MS < bestP90 {
-			bestP90 = c.WallP90MS
-		}
-		if c.CostUSD != nil && (bestCost == nil || *c.CostUSD < *bestCost) {
+		if c.AllPass > 0 && c.CostUSD != nil && (bestCost == nil || *c.CostUSD < *bestCost) {
 			bestCost = c.CostUSD
 		}
 	}
 	for i, c := range cells {
-		rows[i].BestRate = c.PassRate == bestRate
-		rows[i].BestX = c.AllPass == bestX
-		rows[i].BestP50 = c.WallP50MS == bestP50
-		rows[i].BestP90 = c.WallP90MS == bestP90
-		rows[i].BestCost = c.CostUSD != nil && bestCost != nil && *c.CostUSD == *bestCost
+		rows[i].BestRate = bestRate > 0 && c.PassRate == bestRate
+		rows[i].BestX = bestX > 0 && c.AllPass == bestX
+		rows[i].BestP50 = c.AllPass > 0 && c.WallP50MS == bestP50
+		rows[i].BestP90 = c.AllPass > 0 && c.WallP90MS == bestP90
+		rows[i].BestCost = c.AllPass > 0 && c.CostUSD != nil && bestCost != nil && *c.CostUSD == *bestCost
 	}
 }
 

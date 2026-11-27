@@ -113,3 +113,127 @@ func TestM1_3_FolioIntentHashesSortedPathAndBlob(t *testing.T) {
 		t.Fatalf("%d blobs err=%v", len(blobs), err)
 	}
 }
+
+func TestM2_1_UnionTrailersKeepsEveryDistinctTrailerInOriginalOrder(t *testing.T) {
+	a := []Trailer{{"Chimera-Intent", "folio:aa"}, {"Chimera-Capsule", "sha256:01"}, {"Signed-off-by", "Dev <dev@example.com>"}}
+	b := []Trailer{{"chimera-intent", "folio:aa"}, {"Chimera-Capsule", "sha256:02"}, {"Signed-off-by", "Dev <dev@example.com>"}}
+	c := []Trailer{{"Chimera-Intent", "task:bb"}, {"Chimera-Capsule", "sha256:01"}, {"", "ignored"}}
+	got := UnionTrailers(a, b, c)
+	want := []Trailer{{"Chimera-Intent", "folio:aa"}, {"Chimera-Capsule", "sha256:01"}, {"Signed-off-by", "Dev <dev@example.com>"},
+		{"Chimera-Capsule", "sha256:02"}, {"Chimera-Intent", "task:bb"}}
+	if len(got) != len(want) {
+		t.Fatalf("got %v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("trailer %d: got %v want %v", i, got[i], want[i])
+		}
+	}
+	if ct := ChimeraTrailers(got); strings.Join(ct.Intents, ",") != "folio:aa,task:bb" || strings.Join(ct.Capsules, ",") != "sha256:01,sha256:02" {
+		t.Fatalf("%+v", ct)
+	}
+	if UnionTrailers() != nil {
+		t.Fatal("empty union is not nil")
+	}
+}
+
+func TestM2_1_RangeCommitsCarryTrailersAndDiffStatCountsLines(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	write(t, dir, "a.txt", "one\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "base")
+	base := git(t, dir, "rev-parse", "HEAD")
+	intent := "folio:" + strings.Repeat("9c", 32)
+	capsule := "sha256:" + strings.Repeat("4b", 32)
+	write(t, dir, "a.txt", "one\ntwo\nthree\n")
+	write(t, dir, "pkg/b.bin", "\x00\x01\x02")
+	git(t, dir, "add", "-A")
+	msg, err := MessageWithTrailers(ctx, dir, "a: add lines\n\nBody with a --- divider\n---\nstill body", []Trailer{{TrailerIntent, intent}, {TrailerCapsule, capsule}, {TrailerIntent, intent}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(msg, "still body\n\nChimera-Intent: "+intent+"\nChimera-Capsule: "+capsule+"\n") {
+		t.Fatalf("message:\n%s", msg)
+	}
+	git(t, dir, "commit", "-q", "-m", msg)
+	write(t, dir, "c.txt", "no trailers\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "docs: untrailered")
+	commits, err := RangeCommits(ctx, dir, base, "HEAD")
+	if err != nil || len(commits) != 2 {
+		t.Fatalf("%v %+v", err, commits)
+	}
+	first, second := commits[0], commits[1]
+	if first.Subject != "a: add lines" || len(first.Parents) != 1 || first.Parents[0] != base || len(first.Trailers) != 2 ||
+		first.Chimera().Intents[0] != intent || first.Chimera().Capsules[0] != capsule {
+		t.Fatalf("first: %+v", first)
+	}
+	if second.Subject != "docs: untrailered" || len(second.Trailers) != 0 || !second.Chimera().Empty() {
+		t.Fatalf("second: %+v", second)
+	}
+	all, err := CommitTrailers(ctx, dir, first.SHA)
+	if err != nil || len(all) != 2 || all[0] != (Trailer{TrailerIntent, intent}) {
+		t.Fatalf("%v %+v", err, all)
+	}
+	stats, err := DiffStat(ctx, dir, base, first.SHA)
+	if err != nil || len(stats) != 2 || stats[0] != (FileStat{Path: "a.txt", Added: 2}) || stats[1] != (FileStat{Path: "pkg/b.bin", Added: 1, Binary: true}) {
+		t.Fatalf("%v %+v", err, stats)
+	}
+	root, err := DiffStat(ctx, dir, "", base)
+	if err != nil || len(root) != 1 || root[0] != (FileStat{Path: "a.txt", Added: 1}) {
+		t.Fatalf("%v %+v", err, root)
+	}
+}
+
+// TestM2_1_NoCommitCanHideFromTheWalk: record and unit separators in a
+// subject once split a commit out of the range; a walk must list every
+// commit git rev-list counts.
+func TestM2_1_NoCommitCanHideFromTheWalk(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	write(t, dir, "a.txt", "one\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "base")
+	base := git(t, dir, "rev-parse", "HEAD")
+	subjects := []string{"verify: quietly weaken\x1e", "a\x1fb \x1e\x1f c", "plain"}
+	for i, subject := range subjects {
+		write(t, dir, "verify/check.sh", strings.Repeat("x", i+1)+"\n")
+		git(t, dir, "add", "-A")
+		git(t, dir, "commit", "-q", "-m", subject+"\n\nBody.\n\nChimera-Intent: folio:"+strings.Repeat("9c", 32))
+	}
+	commits, err := RangeCommits(ctx, dir, base, "HEAD")
+	if err != nil || len(commits) != len(subjects) {
+		t.Fatalf("%v: %d commits", err, len(commits))
+	}
+	for i, c := range commits {
+		if c.Subject != subjects[i] || len(c.Chimera().Intents) != 1 {
+			t.Errorf("commit %d: %q %+v", i, c.Subject, c.Trailers)
+		}
+	}
+}
+
+// TestM2_1_DiffStatCannotBeSwitchedOffByAttributes: a "-diff" attribute
+// carried by the change itself does not hide its lines.
+func TestM2_1_DiffStatCannotBeSwitchedOffByAttributes(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	write(t, dir, "a.txt", "one\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "base")
+	base := git(t, dir, "rev-parse", "HEAD")
+	write(t, dir, "big.txt", strings.Repeat("line\n", 5000))
+	write(t, dir, ".gitattributes", "big.txt -diff\n")
+	git(t, dir, "add", "-A")
+	git(t, dir, "commit", "-q", "-m", "big")
+	stats, err := DiffStat(ctx, dir, base, "HEAD")
+	if err != nil || len(stats) != 2 {
+		t.Fatalf("%v %+v", err, stats)
+	}
+	if stats[1].Path != "big.txt" || stats[1].Added != 5000 || !stats[1].Binary {
+		t.Fatalf("%+v", stats[1])
+	}
+}

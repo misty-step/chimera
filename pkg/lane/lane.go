@@ -44,12 +44,15 @@ type Spec struct {
 	Brief    string // task brief; with Lane.Prompt it forms the prompt file
 	Harness  Command
 	Verifier Command
-	Tags     []string
-	Scent    string            // pre-flight text pushed to the harness (context_policy push)
-	Env      []string          // extra KEY=VALUE for harness and verifier
-	Ring0    func(string) bool // reports Ring-0 paths; nil means none
-	Price    *Price            // nil when the model has no configured price
-	Now      func() time.Time  // nil means time.Now
+	// VerifyOnly skips the harness: the lane judges the tree at BaseSHA as it
+	// is. Land uses it to verify the tree that will land (PRODUCT.md §2.5).
+	VerifyOnly bool
+	Tags       []string
+	Scent      string            // pre-flight text pushed to the harness (context_policy push)
+	Env        []string          // extra KEY=VALUE for harness and verifier
+	Ring0      func(string) bool // reports Ring-0 paths; nil means none
+	Price      *Price            // nil when the model has no configured price
+	Now        func() time.Time  // nil means time.Now
 }
 
 // Event is one line of transcript.jsonl. Every event names the checkpoint,
@@ -300,7 +303,9 @@ func Execute(ctx context.Context, runner Runner, spec Spec) (res *Result, err er
 	// Harness.
 	var hres ExecResult
 	hargv, herr := render(spec.Harness.Argv, v)
-	if herr != nil || len(hargv) == 0 {
+	if spec.VerifyOnly {
+		// No harness: nothing authored here, only judged.
+	} else if herr != nil || len(hargv) == 0 {
 		hres = ExecResult{ExitCode: -1, Err: "harness command is not runnable"}
 		if herr != nil {
 			hres.Err = herr.Error()

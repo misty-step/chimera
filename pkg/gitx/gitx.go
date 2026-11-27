@@ -275,3 +275,200 @@ func FolioIntent(ctx context.Context, dir, rev string) (string, error) {
 	}
 	return "folio:" + hex.EncodeToString(h.Sum(nil)), nil
 }
+
+// Trailer is one "Key: value" line of a commit message's trailer block.
+type Trailer struct {
+	Key, Value string
+}
+
+func parseTrailers(block, sep string) []Trailer {
+	var out []Trailer
+	for _, line := range strings.Split(block, sep) {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok || k == "" || strings.ContainsAny(k, " \t") {
+			continue
+		}
+		out = append(out, Trailer{Key: k, Value: strings.TrimSpace(v)})
+	}
+	return out
+}
+
+// CommitTrailers returns every trailer of a commit, in message order.
+func CommitTrailers(ctx context.Context, dir, commit string) ([]Trailer, error) {
+	out, err := Run(ctx, dir, "log", "-1", "--format=%(trailers:only,unfold)", commit)
+	if err != nil {
+		return nil, err
+	}
+	return parseTrailers(string(out), "\n"), nil
+}
+
+// UnionTrailers merges the trailers of source commits, given oldest first:
+// every distinct trailer once, in the order it first appeared. Keys compare
+// case-insensitively, values exactly. This is what a squash or rebase must
+// write so that no source commit's evidence binding is lost (PRODUCT.md §2.4).
+func UnionTrailers(sources ...[]Trailer) []Trailer {
+	seen := map[string]bool{}
+	var out []Trailer
+	for _, src := range sources {
+		for _, t := range src {
+			k := strings.ToLower(t.Key) + "\x00" + t.Value
+			if t.Key == "" || seen[k] {
+				continue
+			}
+			seen[k] = true
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// ChimeraTrailers picks the Intent and Capsule trailers out of a trailer list.
+func ChimeraTrailers(ts []Trailer) Trailers {
+	var t Trailers
+	for _, tr := range ts {
+		switch {
+		case strings.EqualFold(tr.Key, TrailerIntent):
+			t.Intents = append(t.Intents, tr.Value)
+		case strings.EqualFold(tr.Key, TrailerCapsule):
+			t.Capsules = append(t.Capsules, tr.Value)
+		}
+	}
+	return t
+}
+
+// MessageWithTrailers returns msg (a subject and optional body, without a
+// trailer block of its own that should be kept apart) with the given trailers
+// appended in order, using git interpret-trailers. A trailer already present
+// is not repeated.
+func MessageWithTrailers(ctx context.Context, dir, msg string, trailers []Trailer) (string, error) {
+	msg = strings.TrimRight(msg, "\n") + "\n"
+	if len(trailers) == 0 {
+		return msg, nil
+	}
+	args := []string{"-c", "trailer.ifexists=addIfDifferent", "-c", "trailer.ifmissing=add", "-c", "trailer.where=end",
+		"interpret-trailers", "--no-divider", "--where", "end", "--if-exists", "addIfDifferent", "--if-missing", "add"}
+	for _, t := range trailers {
+		args = append(args, "--trailer", t.Key+": "+t.Value)
+	}
+	out, err := RunInput(ctx, dir, []byte(msg), nil, args...)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// Commit is one commit of a range.
+type Commit struct {
+	SHA      string
+	Parents  []string
+	Subject  string
+	Trailers []Trailer // every trailer, in message order
+}
+
+// Chimera returns the commit's Intent and Capsule trailers.
+func (c Commit) Chimera() Trailers { return ChimeraTrailers(c.Trailers) }
+
+// RangeCommits lists the commits in base..head, oldest first, in a stable
+// topological order. Fields are framed with NUL, which no commit message can
+// contain, and the parsed count is checked against git rev-list: a commit
+// can never be silently dropped from a walk, whatever bytes its subject
+// holds.
+func RangeCommits(ctx context.Context, dir, base, head string) ([]Commit, error) {
+	out, err := Run(ctx, dir, "log", "--reverse", "--topo-order",
+		"--format=%H%x00%P%x00%s%x00%(trailers:only,unfold)%x00", base+".."+head)
+	if err != nil {
+		return nil, err
+	}
+	fields := strings.Split(string(out), "\x00")
+	var commits []Commit
+	for i := 0; i+3 < len(fields); i += 4 {
+		sha := strings.TrimLeft(fields[i], "\n")
+		if len(sha) < 40 {
+			return nil, fmt.Errorf("git log: unreadable record in %s..%s", base, head)
+		}
+		commits = append(commits, Commit{SHA: sha, Parents: strings.Fields(fields[i+1]), Subject: fields[i+2], Trailers: parseTrailers(fields[i+3], "\n")})
+	}
+	count, err := Run(ctx, dir, "rev-list", "--count", base+".."+head)
+	if err != nil {
+		return nil, err
+	}
+	var want int
+	fmt.Sscanf(strings.TrimSpace(string(count)), "%d", &want)
+	if want != len(commits) {
+		return nil, fmt.Errorf("git log: read %d of %d commits in %s..%s", len(commits), want, base, head)
+	}
+	return commits, nil
+}
+
+// FileStat is one file of a diff: lines added and deleted (both zero for a
+// binary file, which sets Binary).
+type FileStat struct {
+	Path           string
+	Added, Deleted int
+	Binary         bool
+}
+
+// EmptyTree returns the object name of the empty tree in dir's object format.
+func EmptyTree(ctx context.Context, dir string) (string, error) {
+	out, err := RunInput(ctx, dir, nil, nil, "hash-object", "-t", "tree", "--stdin")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// DiffStat lists the files that differ between two trees or commits, sorted
+// by path, with renames off so a moved file counts on both sides. An empty
+// from means the empty tree (a root commit's whole content).
+//
+// The counts do not depend on the checkout: the diff algorithm is pinned, and
+// a file Git calls binary — truly binary, or marked "-diff" in a
+// .gitattributes the change itself may carry — is counted again as text, so
+// an attribute cannot switch the line count off. Binary stays set for it.
+func DiffStat(ctx context.Context, dir, from, to string) ([]FileStat, error) {
+	if from == "" {
+		var err error
+		if from, err = EmptyTree(ctx, dir); err != nil {
+			return nil, err
+		}
+	}
+	args := []string{"--literal-pathspecs", "-c", "core.quotePath=false", "-c", "diff.algorithm=myers", "diff", "--no-renames",
+		"--no-ext-diff", "--no-textconv", "--no-color", "--diff-algorithm=myers"}
+	out, err := Run(ctx, dir, append(append([]string{}, args...), "--numstat", "-z", from, to)...)
+	if err != nil {
+		return nil, err
+	}
+	var stats []FileStat
+	for _, rec := range strings.Split(string(out), "\x00") {
+		f := strings.SplitN(rec, "\t", 3)
+		if len(f) != 3 || f[2] == "" {
+			continue
+		}
+		st := FileStat{Path: f[2]}
+		if f[0] == "-" {
+			// --numstat honours the attribute even under --text; the patch does not.
+			st.Binary = true
+			patch, err := Run(ctx, dir, append(append([]string{}, args...), "--text", "-U0", from, to, "--", st.Path)...)
+			if err != nil {
+				return nil, err
+			}
+			inHunk := false
+			for _, line := range strings.Split(string(patch), "\n") {
+				switch {
+				case strings.HasPrefix(line, "@@"):
+					inHunk = true
+				case inHunk && strings.HasPrefix(line, "+"):
+					st.Added++
+				case inHunk && strings.HasPrefix(line, "-"):
+					st.Deleted++
+				}
+			}
+		} else {
+			fmt.Sscanf(f[0], "%d", &st.Added)
+			fmt.Sscanf(f[1], "%d", &st.Deleted)
+		}
+		stats = append(stats, st)
+	}
+	sort.Slice(stats, func(i, j int) bool { return stats[i].Path < stats[j].Path })
+	return stats, nil
+}
