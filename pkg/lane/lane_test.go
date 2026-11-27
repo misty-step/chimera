@@ -706,9 +706,10 @@ func TestM1_4_LaneWithoutCapsuleCountsAsFailedCriterion(t *testing.T) {
 // (0/K) is not "best" at wall time however fast it failed; weight 600 on
 // Wall p50/p90 goes only to cells with at least one all-pass lane.
 func TestM1_4_FailingRowsNeverCarryBestWallTime(t *testing.T) {
+	cheap, dear := 0.01, 0.50
 	rep := &Report{Bench: "b", K: 2, Cells: []CellReport{
-		{Fixture: "f", Cell: "aaaa", K: 2, PassRate: 1, AllPass: 2, WallP50MS: 9000, WallP90MS: 9500},
-		{Fixture: "f", Cell: "bbbb", K: 2, PassRate: 0, AllPass: 0, WallP50MS: 10, WallP90MS: 20},
+		{Fixture: "f", Cell: "aaaa", K: 2, PassRate: 1, AllPass: 2, WallP50MS: 9000, WallP90MS: 9500, CostUSD: &dear},
+		{Fixture: "f", Cell: "bbbb", K: 2, PassRate: 0, AllPass: 0, WallP50MS: 10, WallP90MS: 20, CostUSD: &cheap},
 		{Fixture: "f", Cell: "cccc", K: 2, PassRate: 0.5, AllPass: 1, WallP50MS: 12000, WallP90MS: 9500},
 		{Fixture: "g", Cell: "dddd", K: 2, PassRate: 0, AllPass: 0, WallP50MS: 5, WallP90MS: 6},
 	}}
@@ -719,13 +720,13 @@ func TestM1_4_FailingRowsNeverCarryBestWallTime(t *testing.T) {
 	html := string(page)
 	for _, want := range []string{
 		// Passing and fastest among the passing: best on every column it wins.
-		`<td class="num best">1.00</td><td class="num best">2/2</td><td class="num best">9.00s</td><td class="num best">9.50s</td>`,
-		// 0/K and fastest overall: no weight on wall time.
-		`<td class="num">0.00</td><td class="num">0/2</td><td class="num">0.01s</td><td class="num">0.02s</td>`,
+		`<td class="num best">1.00</td><td class="num best">2/2</td><td class="num best">9.00s</td><td class="num best">9.50s</td><td class="num best">$0.5000</td>`,
+		// 0/K, fastest and cheapest overall: no weight on wall time or cost.
+		`<td class="num">0.00</td><td class="num">0/2</td><td class="num">0.01s</td><td class="num">0.02s</td><td class="num">$0.0100</td>`,
 		// Ties on p90 with the best passing cell: both are best there.
 		`<td class="num">0.50</td><td class="num">1/2</td><td class="num">12.00s</td><td class="num best">9.50s</td>`,
 		// A fixture whose only cell failed everything: wall cells stay plain.
-		`<td class="num best">0/2</td><td class="num">0.01s</td><td class="num">0.01s</td>`,
+		`<td class="num">0.00</td><td class="num">0/2</td><td class="num">0.01s</td><td class="num">0.01s</td><td class="num">—</td>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("page lacks %q", want)

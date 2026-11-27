@@ -124,15 +124,22 @@ type Land struct {
 // Inlet configures the POST /v1/inlet/nit handler (PRODUCT.md §2.6). The
 // handler is an http.Handler in pkg/inlet; whatever hosts it reads this block.
 type Inlet struct {
-	Repo            string   `yaml:"repo"`
-	Issuer          string   `yaml:"issuer"`   // required "iss" of the edge token
-	Audience        string   `yaml:"audience"` // required "aud"; empty skips the check
-	JWKSURL         string   `yaml:"jwks_url"`
-	JWKSFile        string   `yaml:"jwks_file"`
-	TokenHeader     string   `yaml:"token_header"` // edge header carrying the token, besides Authorization: Bearer
-	TokenCookie     string   `yaml:"token_cookie"` // edge session cookie carrying the token
-	Debounce        string   `yaml:"debounce"`     // Go duration; window before the Folio PR is updated
-	DailyCap        int      `yaml:"daily_cap"`    // owner nits classified per repo per UTC day
+	Repo        string `yaml:"repo"`
+	Issuer      string `yaml:"issuer"`   // required "iss" of the edge token
+	Audience    string `yaml:"audience"` // required "aud"; empty skips the check
+	JWKSURL     string `yaml:"jwks_url"`
+	JWKSFile    string `yaml:"jwks_file"`
+	TokenHeader string `yaml:"token_header"` // edge header carrying the token, besides Authorization: Bearer
+	TokenCookie string `yaml:"token_cookie"` // edge session cookie carrying the token
+	// EmailVerified is "required" (default: the token must say
+	// email_verified: true) or "if-present" (for edges whose tokens assert the
+	// email by issuance and carry no such claim; a present false still refuses).
+	EmailVerified string `yaml:"email_verified"`
+	// ClientIPHeader names the header the edge sets to the client address; the
+	// triage rate limit keys on it. Empty means the connection's address.
+	ClientIPHeader  string   `yaml:"client_ip_header"`
+	Debounce        string   `yaml:"debounce"`  // Go duration; window before the Folio PR is updated
+	DailyCap        int      `yaml:"daily_cap"` // owner nits classified per repo per UTC day
 	PreviewOrigins  []string `yaml:"preview_origins"`
 	BotActors       []string `yaml:"bot_actors"`
 	TriagePerMinute int      `yaml:"triage_per_minute"`
@@ -361,6 +368,11 @@ func (c *Config) validate() error {
 	}
 	if err := checkDuration(c.Inlet.Classifier.Timeout); err != nil {
 		return &LoadError{Path: c.Path, Msg: fmt.Sprintf("inlet.classifier.timeout: %v", err)}
+	}
+	switch c.Inlet.EmailVerified {
+	case "", "required", "if-present":
+	default:
+		return &LoadError{Path: c.Path, Msg: "inlet.email_verified: must be required or if-present"}
 	}
 	if c.Inlet.DailyCap < 0 || c.Inlet.TriagePerMinute < 0 {
 		return &LoadError{Path: c.Path, Msg: "inlet.daily_cap and inlet.triage_per_minute: must not be negative"}

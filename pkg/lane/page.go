@@ -451,8 +451,9 @@ func markBest(rows []pageBenchRow, rep *Report, fixture string) {
 	if len(cells) == 0 {
 		return
 	}
-	// A wall time is only "best" for a cell that passed at least once: the
-	// fastest way to fail everything is not an achievement to set in weight 600.
+	// A wall time or a cost is only "best" for a cell that passed at least
+	// once: the fastest or cheapest way to fail everything is not an
+	// achievement to set in weight 600. A column whose best is zero has none.
 	bestRate, bestX := cells[0].PassRate, cells[0].AllPass
 	bestP50, bestP90 := int64(-1), int64(-1)
 	var bestCost *float64
@@ -471,16 +472,16 @@ func markBest(rows []pageBenchRow, rep *Report, fixture string) {
 				bestP90 = c.WallP90MS
 			}
 		}
-		if c.CostUSD != nil && (bestCost == nil || *c.CostUSD < *bestCost) {
+		if c.AllPass > 0 && c.CostUSD != nil && (bestCost == nil || *c.CostUSD < *bestCost) {
 			bestCost = c.CostUSD
 		}
 	}
 	for i, c := range cells {
-		rows[i].BestRate = c.PassRate == bestRate
-		rows[i].BestX = c.AllPass == bestX
+		rows[i].BestRate = bestRate > 0 && c.PassRate == bestRate
+		rows[i].BestX = bestX > 0 && c.AllPass == bestX
 		rows[i].BestP50 = c.AllPass > 0 && c.WallP50MS == bestP50
 		rows[i].BestP90 = c.AllPass > 0 && c.WallP90MS == bestP90
-		rows[i].BestCost = c.CostUSD != nil && bestCost != nil && *c.CostUSD == *bestCost
+		rows[i].BestCost = c.AllPass > 0 && c.CostUSD != nil && bestCost != nil && *c.CostUSD == *bestCost
 	}
 }
 
