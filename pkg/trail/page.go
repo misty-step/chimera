@@ -28,6 +28,8 @@ figure video { max-width: 100%; height: auto; border: 1px solid var(--rule); dis
 td .muted { font-size: 0.75rem; }
 /* A long unbroken token (a URL, a JSON blob) wraps inside its line instead of widening the page (DESIGN.md §2.4). */
 .transcript code { min-width: 0; overflow-wrap: anywhere; }
+/* A wide table's scroll container is a keyboard stop: it takes the accent focus ring too (DESIGN.md §2.6). */
+.scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 `
 
 type pageLink struct{ Href, Text string }

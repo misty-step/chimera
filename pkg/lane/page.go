@@ -26,6 +26,8 @@ caption { text-align: left; font-size: 0.875rem; color: var(--muted); padding: 0
 p.none { margin: 0; padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 0.875rem; color: var(--muted); }
 /* A long unbroken token (a URL, a JSON blob) wraps inside its line instead of widening the page (DESIGN.md §2.4). */
 .transcript code { min-width: 0; overflow-wrap: anywhere; }
+/* A wide table's scroll container is a keyboard stop: it takes the accent focus ring too (DESIGN.md §2.6). */
+.scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 `
 
 // lockedAssets are copied into every report byte-for-byte.

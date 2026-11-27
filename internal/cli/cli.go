@@ -76,6 +76,7 @@ var (
 	flagConfig = flagSpec{Long: "config", Arg: "path", Help: "config file (default ./chimera.yaml, then $XDG_CONFIG_HOME/chimera/chimera.yaml)"}
 	flagQuiet  = flagSpec{Long: "quiet", Short: 'q', Help: "suppress everything but data and errors"}
 	flagHelp   = flagSpec{Long: "help", Short: 'h', Help: "show help"}
+	flagStrict = flagSpec{Long: "strict", Help: "fail closed on unreadable entries and truncated scans"}
 	globals    = []flagSpec{flagConfig, flagQuiet, flagHelp}
 )
 
@@ -93,6 +94,22 @@ var commands = []*command{
 		},
 		Flags: []flagSpec{flagJSON},
 		Run:   runLintTenantLeak,
+	},
+	{
+		Path: []string{"lint", "observability"}, Args: "[<dir>]", MaxArgs: 1,
+		Summary: "audit health, telemetry, and client error capture",
+		Detail: []string{
+			"When <dir> (default .) has a web, worker, or HTTP service surface, checks:",
+			"  health     a /healthz or /api/health route reporting status and release",
+			"  telemetry  observability.enabled, or server errors to an env-supplied sink",
+			"  client     error, unhandledrejection, securitypolicyviolation listeners",
+			"             that forward, same-origin under connect-src 'self'",
+			"Prints path:line:col rule-id per finding; --json emits chimera.lint/v1.",
+			"Exits 0 not-applicable without a surface or with observability.allow: [\"*\"].",
+			"--strict exits 1 on an unreadable directory or file or a truncated scan.",
+		},
+		Flags: []flagSpec{flagStrict, flagJSON},
+		Run:   runLintObservability,
 	},
 	{
 		Path: []string{"ring0", "lock"}, Summary: "hash Ring-0 files into .chimera/ring0.lock",
@@ -341,6 +358,9 @@ type cliError struct {
 	msg      string // lowercase description
 	next     string // consequence or next action
 	findings any
+	// noJSON is set when the command already wrote its --json data object
+	// (lint observability findings are chimera.lint/v1 data, PRODUCT.md [M2-4]).
+	noJSON bool
 }
 
 func (e *cliError) Error() string { return e.msg }
@@ -669,7 +689,7 @@ func (c *ctx) fail(command string, err error) int {
 		line += "; " + ce.next
 	}
 	line = strings.ReplaceAll(line, "\n", " ")
-	if c.json {
+	if c.json && !ce.noJSON {
 		findings := ce.findings
 		if findings == nil {
 			findings = []any{}
@@ -695,8 +715,14 @@ type errorJSON struct {
 	Findings any    `json:"findings"`
 }
 
+// lower lowercases the first letter of a message, unless the first word is
+// an all-caps token such as an HTTP method ("GET cas/…"), which stays as is.
 func lower(s string) string {
 	if s == "" {
+		return s
+	}
+	word, _, _ := strings.Cut(s, " ")
+	if len(word) > 1 && strings.ToUpper(word) == word && strings.ToLower(word) != word {
 		return s
 	}
 	return strings.ToLower(s[:1]) + s[1:]

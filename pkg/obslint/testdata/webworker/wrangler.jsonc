@@ -1,0 +1,16 @@
+{
+  // An edge worker that also serves the static site in ./public.
+  "name": "acme-widget",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-01",
+  "assets": { "directory": "./public" },
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": false }, // per-feature switches do not disable telemetry
+  },
+  "env": {
+    "staging": {
+      "observability": { "enabled": true },
+    },
+  },
+}

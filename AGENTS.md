@@ -7,7 +7,7 @@ Rules for any agent or person changing this repository. Short on purpose; the Fo
 1. `PRODUCT.md` and `DESIGN.md` are the specification. Read both before writing code.
 2. If code and Folio disagree, fix the code — or change the Folio in the same PR and say so. Never leave them
    disagreeing.
-3. Work against acceptance IDs (`[M1-1]`…`[M2-3]`). Build Milestone 1 in order; do not start M2 until M1 is green.
+3. Work against acceptance IDs (`[M1-1]`…`[M2-4]`). Build Milestone 1 in order; do not start M2 until M1 is green.
 
 ## Hard rules
 
