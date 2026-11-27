@@ -73,7 +73,26 @@ func TriageKey(repo, day string, seq int) string {
 	return fmt.Sprintf("inlet/%s/triage/%s/%06d.json", repo, day, seq)
 }
 
-// Append implements Inbox.
+// highest lists the day's entries and returns the next free sequence number.
+func (s *StoreInbox) highest(ctx context.Context, day string) (int, error) {
+	keys, err := s.Store.List(ctx, fmt.Sprintf("inlet/%s/triage/%s/", s.Repo, day))
+	if err != nil {
+		return 0, err
+	}
+	next := 1
+	for _, k := range keys {
+		var n int
+		if _, err := fmt.Sscanf(k[strings.LastIndexByte(k, '/')+1:], "%06d.json", &n); err == nil && n >= next {
+			next = n + 1
+		}
+	}
+	return next, nil
+}
+
+// Append implements Inbox. The usual cost is one conditional PUT. When
+// another writer has taken the sequence number, the day is listed once to
+// find where it stands, instead of probing number after number with the
+// whole body.
 func (s *StoreInbox) Append(ctx context.Context, e Entry) error {
 	if e.Schema == "" {
 		e.Schema = EntrySchema
@@ -87,19 +106,15 @@ func (s *StoreInbox) Append(ctx context.Context, e Entry) error {
 	if s.day != day {
 		s.day, s.next = day, 1
 		// One listing per day and process finds where the day's sequence stands.
-		if keys, err := s.Store.List(ctx, fmt.Sprintf("inlet/%s/triage/%s/", s.Repo, day)); err == nil {
-			for _, k := range keys {
-				var n int
-				if _, err := fmt.Sscanf(k[strings.LastIndexByte(k, '/')+1:], "%06d.json", &n); err == nil && n >= s.next {
-					s.next = n + 1
-				}
-			}
+		if next, err := s.highest(ctx, day); err == nil {
+			s.next = next
 		}
 	}
 	seq := s.next
 	s.next++
 	s.mu.Unlock()
-	for ; seq <= maxTriagePerDay; seq++ {
+	listed := false
+	for attempt := 0; seq <= maxTriagePerDay && attempt < 64; attempt++ {
 		created, err := s.Store.Put(ctx, TriageKey(s.Repo, day, seq), raw)
 		if err != nil {
 			return fmt.Errorf("triage inbox: %w", err)
@@ -112,6 +127,19 @@ func (s *StoreInbox) Append(ctx context.Context, e Entry) error {
 			s.mu.Unlock()
 			return nil
 		}
+		seq++
+		if !listed {
+			// Someone else is writing this day too: ask once where it stands.
+			listed = true
+			if next, err := s.highest(ctx, day); err == nil && next > seq {
+				seq = next
+			}
+		}
+		s.mu.Lock()
+		if s.day == day && s.next <= seq {
+			s.next = seq + 1
+		}
+		s.mu.Unlock()
 	}
 	return fmt.Errorf("triage inbox: full for %s", day)
 }

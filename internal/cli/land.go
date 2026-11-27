@@ -42,6 +42,24 @@ func (c *ctx) landTarget(cfg *config.Config) (string, error) {
 	return target, nil
 }
 
+// landRepo names the repository whose landing state (epochs, push intents,
+// outcomes) this lander shares with every other lander of the same forge
+// repository: --repo, then forge.repo, then the single tenant.repos entry.
+// It is never guessed from a directory name: two clones of one repository
+// must fence each other.
+func (c *ctx) landRepo(cfg *config.Config) (string, error) {
+	if r := strings.TrimSpace(c.flags["repo"]); r != "" {
+		return r, nil
+	}
+	if r := strings.Trim(cfg.Forge.Repo, "/"); r != "" {
+		return r, nil
+	}
+	if len(cfg.Tenant.Repos) == 1 && cfg.Tenant.Repos[0] != "" {
+		return cfg.Tenant.Repos[0], nil
+	}
+	return "", usageErr("--repo", "repository name not configured", "set forge.repo or pass --repo")
+}
+
 type enqueueResult struct {
 	Schema   string       `json:"schema"`
 	Change   forge.Change `json:"change"`
@@ -127,9 +145,9 @@ func runLandStatus(c *ctx) error {
 	if err != nil {
 		return err
 	}
-	repo := c.repoName(cfg, root)
-	if repo == "" {
-		return usageErr("--repo", "repository name unknown", "pass --repo or set tenant.repos")
+	repo, err := c.landRepo(cfg)
+	if err != nil {
+		return err
 	}
 	st, err := land.Status(c, f, store, repo, target)
 	if err != nil {
@@ -204,6 +222,10 @@ func runLandRun(c *ctx) error {
 	if err != nil {
 		return err
 	}
+	repo, err := c.landRepo(cfg)
+	if err != nil {
+		return err
+	}
 	verifierName := c.flags["verifier"]
 	if verifierName == "" {
 		verifierName = cfg.Land.Verifier
@@ -223,18 +245,20 @@ func runLandRun(c *ctx) error {
 	if err != nil {
 		return err
 	}
-	if g, ok := f.(*forge.Git); ok && g.Dir == root {
-		// Moving a checked-out branch underneath its work tree would leave the
-		// checkout disagreeing with HEAD. Refuse, as git itself does for a push.
-		if head, err := gitx.Run(c, root, "symbolic-ref", "--quiet", "HEAD"); err == nil && strings.TrimSpace(string(head)) == forge.RefName(target) {
-			return usageErr("--target", target+" is checked out in this work tree", "check out another branch here, or point forge.dir at the shared repository")
+	if g, ok := f.(*forge.Git); ok {
+		// Moving a checked-out branch underneath a work tree would leave that
+		// checkout disagreeing with its HEAD. Refuse, as git itself does for a
+		// push — whichever work tree of the forge repository holds it.
+		if where, err := checkedOut(c, g.Dir, target); err != nil {
+			return failed("forge.dir", err, "nothing was attempted")
+		} else if where != "" {
+			return usageErr("--target", target+" is checked out in "+where, "check out another branch there, or point forge.dir at a bare repository")
 		}
 	}
 	store, err := c.openStore(cfg)
 	if err != nil {
 		return err
 	}
-	repo := c.repoName(cfg, root)
 	deps, err := c.laneDeps(cfg, store, root, repo)
 	if err != nil {
 		return err
@@ -277,6 +301,21 @@ func runLandRun(c *ctx) error {
 	if results == nil {
 		results = []land.Result{}
 	}
+	// A notification, check, or record that failed changes no outcome, but it
+	// must not go unseen: one stderr line each, TTY or not, -q or not.
+	untold := 0
+	for _, r := range sum.Results {
+		for _, w := range r.Warnings {
+			fmt.Fprintln(c.inv.Stderr, "chimera: land run: warning: "+r.Change.Branch+": "+oneLine(humanHashes(lower(w)), 300))
+			if strings.HasPrefix(w, "notify ") {
+				untold++
+			}
+		}
+	}
+	told := "each owner was told the reason"
+	if untold > 0 {
+		told = fmt.Sprintf("%d of %d owners could not be told the reason; see the warnings", untold, evicted)
+	}
 	switch {
 	case errors.Is(runErr, land.ErrFenced):
 		return &cliError{code: ExitError, object: "epoch " + strconv.Itoa(sum.Epoch), msg: "fenced by a higher epoch", next: fmt.Sprintf("another lander has taken over; %d landed before that, nothing more was pushed", landed), findings: results}
@@ -293,7 +332,7 @@ func runLandRun(c *ctx) error {
 			}
 		}
 		return &cliError{code: ExitError, msg: fmt.Sprintf("%d of %d changes evicted (%s: %s)", evicted, len(sum.Results), first.Change.Branch, oneLine(humanHashes(first.Reason), 200)),
-			next: fmt.Sprintf("%d landed on %s; each owner was told the reason", landed, target), findings: results}
+			next: fmt.Sprintf("%d landed on %s; %s", landed, target, told), findings: results}
 	case pending > 0:
 		last := sum.Results[len(sum.Results)-1]
 		return &cliError{code: ExitPending, object: last.Change.Branch, msg: oneLine(humanHashes(last.Reason), 200), next: fmt.Sprintf("%d landed; run the command again", landed), findings: results}
@@ -311,15 +350,57 @@ func runLandRun(c *ctx) error {
 	return nil
 }
 
+// checkedOut reports the work tree of the repository at dir that has
+// target checked out, or "" when none has (a bare repository never does).
+func checkedOut(ctx context.Context, dir, target string) (string, error) {
+	out, err := gitx.Run(ctx, dir, "worktree", "list", "--porcelain")
+	if err != nil {
+		return "", err
+	}
+	where := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			where = p
+		}
+		if b, ok := strings.CutPrefix(line, "branch "); ok && b == forge.RefName(target) {
+			return where, nil
+		}
+	}
+	return "", nil
+}
+
+func asciiLower(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
+// signerAddress extracts the address a verified signature belongs to from
+// git's %GS: an SSH signature gives the allowed-signers principal as it is,
+// an OpenPGP signature gives a user ID "Name <address>".
+func signerAddress(signer string) string {
+	signer = strings.TrimSpace(signer)
+	if i := strings.LastIndexByte(signer, '<'); i >= 0 && strings.HasSuffix(signer, ">") {
+		signer = signer[i+1 : len(signer)-1]
+	}
+	return asciiLower(signer)
+}
+
 // ownerSigned is explicit owner approval read from Git itself (PRODUCT.md,
 // Ring-0 policy: "an owner-signed commit"): every commit of the change that
-// touches a Ring-0 path must carry a good signature and be committed by an
-// address in tenant.owner_emails. Anything else — no owners configured, an
-// unsigned commit, a signature Git cannot verify — is not approval.
+// touches a Ring-0 path must carry a good signature whose VERIFIED SIGNER is
+// an address in tenant.owner_emails. The committer and author headers are
+// claims anyone can write and are never consulted. Anything else — no
+// owners configured, an unsigned commit, a signature Git cannot verify, a
+// good signature by someone who is not an owner — is not approval.
 func ownerSigned(root string, ownerEmails []string, ring0 func(string) bool) func(context.Context, forge.Change, land.Rebased, []string) bool {
 	owners := map[string]bool{}
 	for _, e := range ownerEmails {
-		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+		if e = asciiLower(strings.TrimSpace(e)); e != "" {
 			owners[e] = true
 		}
 	}
@@ -342,12 +423,12 @@ func ownerSigned(root string, ownerEmails []string, ring0 func(string) bool) fun
 			if !touches {
 				continue
 			}
-			sig, err := gitx.Run(ctx, root, "log", "-1", "--format=%G?%x00%ce", src.SHA)
+			sig, err := gitx.Run(ctx, root, "log", "-1", "--format=%G?%x00%GS", src.SHA)
 			if err != nil {
 				return false
 			}
-			status, email, _ := strings.Cut(strings.TrimSpace(string(sig)), "\x00")
-			if status != "G" || !owners[strings.ToLower(email)] {
+			status, signer, _ := strings.Cut(strings.TrimRight(string(sig), "\n"), "\x00")
+			if status != "G" || !owners[signerAddress(signer)] {
 				return false
 			}
 			approved = true

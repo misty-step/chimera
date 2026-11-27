@@ -60,7 +60,7 @@ func TestM2_1_TrailTextJSONAndHTML(t *testing.T) {
 	}
 	if rep.Schema != "chimera.trail/v1" || rep.Repo != "acme/widget" || rep.Base != ref.Base || rep.Head != ref.Head() || rep.Risk != "R3" ||
 		len(rep.OpenRisk) != 4 || len(rep.Unmet) != 2 || len(rep.Missing) != 1 || len(rep.Orphans) != 1 || len(rep.Verdicts) != 6 ||
-		len(rep.Media) != 3 || len(rep.Commits) != 4 || len(rep.Capsules) != 3 || rep.Check.State != "FAIL" || rep.Intents[0] != ref.Intent {
+		len(rep.Media) != 2 || len(rep.Commits) != 4 || len(rep.Capsules) != 3 || rep.Check.State != "FAIL" || rep.Intents[0] != ref.Intent {
 		t.Fatalf("report: %s", j.stdout)
 	}
 
@@ -86,6 +86,9 @@ func TestM2_1_TrailTextJSONAndHTML(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(out, "trail.js")); err == nil {
 		t.Error("bundle ships script")
+	}
+	if _, err := os.Stat(filepath.Join(out, "media", ref.LintCapsule[7:19]+"-capsule-write.svg")); err == nil {
+		t.Error("bundle ships a capsule's SVG")
 	}
 	q := run(t, ref.Dir, nil, "trail", spec, "--config", cfg, "--html", filepath.Join(t.TempDir(), "q"), "-q", "--json")
 	if q.code != ExitOK || q.stderr != "" || !strings.HasPrefix(q.stdout, `{"schema":"chimera.trail/v1"`) {
@@ -146,7 +149,7 @@ func TestM2_1_TrailCheckExitCodes(t *testing.T) {
 	// PASS: every acceptance ID of the Intent proven, every commit bound, no open risk.
 	f := trailtest.New(t, map[string]string{"PRODUCT.md": "# P\n\n**[W-1] Lint.** Clean.\n", "DESIGN.md": "# D\n", "a.txt": "0\n"})
 	intent := f.FolioIntent("HEAD")
-	addr := f.Capsule(trailtest.CapsuleSpec{Intent: intent, BaseSHA: f.Base, Verdicts: []capsule.Verdict{{ID: "[W-1]", Criterion: "lint is clean", Pass: true}}})
+	addr := f.Capsule(trailtest.CapsuleSpec{Intent: intent, BaseSHA: f.Base, Verdicts: []capsule.Verdict{{ID: "[W-1]", Criterion: "lint is clean", Pass: true}}, Paths: []string{"a.txt"}})
 	f.Commit("lint: clean", map[string]string{"a.txt": "1\n"}, trailtest.Trailers(intent, addr)...)
 	passCfg := writeConfig(t, "store:\n  endpoint: file://"+f.StoreDir+"\n")
 	ok := run(t, f.Dir, nil, "trail", f.Base+"..HEAD", "--check", "--config", passCfg)
@@ -199,5 +202,63 @@ func TestM2_1_TrailUsageAndStoreErrors(t *testing.T) {
 	// An empty range is a valid question with a final answer.
 	if e := run(t, ref.Dir, nil, "trail", "HEAD..HEAD", "--check", "--config", cfg); e.code != ExitOK || !strings.Contains(e.stdout, "RISK           R0\n") {
 		t.Fatalf("empty range: %+v", e)
+	}
+}
+
+// TestM2_1_TrailCannotBeBlindedThroughTheCLI: three ways a range once looked
+// cleaner than it was. A commit whose subject holds a record separator is
+// still on the Trail (and its Ring-0 edit still R3, the check still FAIL); a
+// rewrite of .chimera/ring0.lock is Ring-0 whatever the globs name; and a
+// shallow clone that cuts the range is refused, not reported as proven.
+func TestM2_1_TrailCannotBeBlindedThroughTheCLI(t *testing.T) {
+	f := trailtest.New(t, trailtest.BaseFiles())
+	cfg := writeConfig(t, "store:\n  endpoint: file://"+f.StoreDir+"\nring0:\n  paths: [\"verify/**\"]\n")
+	sha := f.Commit("verify: quietly weaken\x1e", map[string]string{"verify/check.sh": "#!/bin/sh\nexit 0\n"})
+	spec := f.Base + "..HEAD"
+	r := run(t, f.Dir, nil, "trail", spec, "--check", "--config", cfg)
+	if r.code != ExitError || !strings.Contains(r.stdout, "CHECK          FAIL\n") || !strings.Contains(r.stdout, "RISK           R3\n") ||
+		!strings.Contains(r.stdout, "MISSING PROOF  1\n") || !strings.HasSuffix(r.stderr, "check FAIL: 1 commit with missing proof; the range does not pass review\n") {
+		t.Fatalf("--check: %+v", r)
+	}
+	v := run(t, f.Dir, nil, "trail", spec, "--config", cfg)
+	if v.code != ExitOK || !strings.Contains(v.stdout, sha[:12]+"  Chimera-Intent, Chimera-Capsule  verify: quietly weaken\n") ||
+		!strings.Contains(v.stdout, "R3     verify/check.sh  Ring-0 path changed") || strings.ContainsAny(v.stdout+v.stderr, "\x1e\x1b") {
+		t.Fatalf("view: %+v", v)
+	}
+	j := run(t, f.Dir, nil, "trail", spec, "--json", "--config", cfg)
+	var rep trail.Report
+	if err := json.Unmarshal([]byte(j.stdout), &rep); err != nil || len(rep.Commits) != 1 || rep.Commits[0].Subject != "verify: quietly weaken" || strings.Contains(j.stdout, `\u001e`) {
+		t.Fatalf("--json: %v %s", err, j.stdout)
+	}
+
+	// The lock is Ring-0 even though ring0.paths does not name it.
+	lockBase := f.Head()
+	f.Commit("ring0: relock", map[string]string{".chimera/ring0.lock": "# chimera ring0.lock v1\n"})
+	l := run(t, f.Dir, nil, "trail", lockBase+"..HEAD", "--config", cfg)
+	if l.code != ExitOK || !strings.Contains(l.stdout, "RISK           R3\n") || !strings.Contains(l.stdout, "R3     .chimera/ring0.lock  Ring-0 path changed") {
+		t.Fatalf("lock: %+v", l)
+	}
+	// With no Ring-0 globs at all, too.
+	bare := writeConfig(t, "store:\n  endpoint: file://"+f.StoreDir+"\n")
+	if l := run(t, f.Dir, nil, "trail", lockBase+"..HEAD", "--config", bare); !strings.Contains(l.stdout, "RISK           R3\n") {
+		t.Fatalf("lock without globs: %+v", l)
+	}
+
+	// A shallow clone of the same history: exit 1, one line, nothing on stdout.
+	dst := t.TempDir()
+	git(t, f.Dir, "config", "uploadpack.allowAnySHA1InWant", "true")
+	git(t, dst, "clone", "-q", "--depth", "1", "file://"+f.Dir, "c")
+	clone := filepath.Join(dst, "c")
+	git(t, clone, "fetch", "-q", "--depth", "1", "origin", f.Base)
+	for _, extra := range [][]string{nil, {"--check"}, {"--html", filepath.Join(t.TempDir(), "p")}} {
+		s := run(t, clone, nil, append([]string{"trail", f.Base + "..HEAD", "--config", cfg}, extra...)...)
+		if s.code != ExitError || s.stdout != "" || !strings.Contains(s.stderr, ": history is shallow at "+f.Head()[:12]+"; fetch the full range; no trail\n") {
+			t.Fatalf("shallow %v: %+v", extra, s)
+		}
+		oneLowercaseErrorLine(t, extra, s.stderr)
+	}
+	sj := run(t, clone, nil, "trail", f.Base+"..HEAD", "--json", "--config", cfg)
+	if sj.code != ExitError || !strings.HasPrefix(sj.stdout, `{"schema":"chimera.error/v1","code":1,"command":"trail","message":"`) {
+		t.Fatalf("shallow --json: %+v", sj)
 	}
 }

@@ -78,10 +78,21 @@ func (g *Git) Head(ctx context.Context, ref string) (SHA, error) {
 	return sha, nil
 }
 
+// lockRetries bounds how long Push waits out another writer's ref lock:
+// each try lets git itself wait lockWait for the lock.
+const lockRetries = 10
+
+// lockWait pins git's own lock timeouts, so the wait does not depend on
+// ambient config.
+var lockWait = []string{"-c", "core.filesRefLockTimeout=100", "-c", "core.packedRefsTimeout=100"}
+
 // Push implements Forge with git update-ref, which takes the ref's lock,
 // compares it with old, and moves it only on a match: create with old Zero,
-// delete with new Zero. Any refusal that leaves the ref somewhere other
-// than old — or a lock another writer holds — is ErrStale.
+// delete with new Zero. A refusal is ErrStale only when the ref really is
+// somewhere other than old. A lock another writer holds is waited out
+// briefly; a lock that never goes away (a crashed writer's leftover) is
+// reported as the error it is, never as "stale", so a caller cannot mistake
+// an unmoved ref for a moved one.
 func (g *Git) Push(ctx context.Context, ref string, old, new SHA) error {
 	ref = RefName(ref)
 	if old.IsZero() && new.IsZero() {
@@ -91,30 +102,31 @@ func (g *Git) Push(ctx context.Context, ref string, old, new SHA) error {
 	if new.IsZero() {
 		width = len(old)
 	}
-	zeros := SHA(strings.Repeat("0", width))
 	if old.IsZero() {
-		old = zeros
+		old = SHA(strings.Repeat("0", width))
 	}
 	var err error
-	if new.IsZero() {
-		_, err = gitx.Run(ctx, g.Dir, "update-ref", "-d", ref, string(old))
-	} else {
-		_, err = gitx.Run(ctx, g.Dir, "update-ref", ref, string(new), string(old))
+	for attempt := 0; ; attempt++ {
+		if new.IsZero() {
+			_, err = gitx.Run(ctx, g.Dir, append(append([]string{}, lockWait...), "update-ref", "-d", ref, string(old))...)
+		} else {
+			_, err = gitx.Run(ctx, g.Dir, append(append([]string{}, lockWait...), "update-ref", ref, string(new), string(old))...)
+		}
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		cur, rerr := g.current(ctx, ref)
+		if rerr == nil && !Same(cur, old) {
+			return ErrStale
+		}
+		if rerr != nil || attempt >= lockRetries || !strings.Contains(err.Error(), ".lock") {
+			break
+		}
 	}
-	if err == nil {
-		return nil
-	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	cur, rerr := g.current(ctx, ref)
-	if rerr == nil && !Same(cur, old) {
-		return ErrStale
-	}
-	if strings.Contains(err.Error(), ".lock") {
-		return ErrStale // another writer holds the ref's lock right now
-	}
-	return fmt.Errorf("push %s: %s", ref, strings.TrimPrefix(err.Error(), "git update-ref: "))
+	return fmt.Errorf("push %s: %s", ref, strings.TrimPrefix(err.Error(), "git -c: "))
 }
 
 // Queue implements Forge.

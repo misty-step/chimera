@@ -243,7 +243,7 @@ func newFixture(t *testing.T, tweak func(*Options, *Deps)) *fixture {
 	f.repo, f.head = folioRepo(t)
 	f.forge.SetRef("main", f.head)
 	f.store = objstore.NewDir(filepath.Join(t.TempDir(), "store"))
-	f.pr = &BranchPR{RepoDir: f.repo, Forge: f.forge, Target: "main", Now: f.clock.Now}
+	f.pr = &BranchPR{RepoDir: f.repo, Forge: f.forge, Target: "main", Store: f.store, Repo: testRepo, Now: f.clock.Now}
 	f.opts = Options{Repo: testRepo, OwnerEmails: []string{"Owner@Example.com"}, Issuer: testIssuer, Audience: testAudience, JWKS: testJWKS,
 		Target: "main", PreviewOrigins: []string{"https://*.preview.example.com", "http://127.0.0.1:9001"}, BotActors: []string{"bot@example.com"}}
 	deps := Deps{Store: f.store, Forge: f.forge, Classifier: f.classifier, Inbox: f.inbox, FolioPR: f.pr, Now: f.clock.Now,
@@ -255,11 +255,27 @@ func newFixture(t *testing.T, tweak func(*Options, *Deps)) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(h.Close)
 	f.h = h
 	return f
 }
 
-const goodNit = `{"schema":"chimera.nit/v1","url":"https://app.example.com/orders?page=2","selector":"#total","viewport":{"w":1440,"h":900,"dpr":2},"text":"Total should use tabular figures."}`
+// goodNit is what the element posts; goodNitKept is what an owner's copy of
+// it looks like once the handler has cut the query off its URL.
+const (
+	goodNit     = `{"schema":"chimera.nit/v1","url":"https://app.example.com/orders?page=2&code=abc#frag","selector":"#total","viewport":{"w":1440,"h":900,"dpr":2},"text":"Total should use tabular figures."}`
+	goodNitKept = `{"schema":"chimera.nit/v1","url":"https://app.example.com/orders","selector":"#total","viewport":{"w":1440,"h":900,"dpr":2},"text":"Total should use tabular figures."}`
+)
+
+// from makes a request same-origin with the given origin: the page and the
+// inlet share a host, as they do behind one edge.
+func from(origin string) func(*http.Request) {
+	return func(r *http.Request) {
+		r.Header.Set("Origin", origin)
+		host := strings.ToLower(origin[strings.Index(origin, "://")+3:])
+		r.Host = host
+	}
+}
 
 type reply struct {
 	Code int
@@ -326,4 +342,18 @@ func (f *fixture) pushes() int {
 func nitText(text string) string {
 	b, _ := json.Marshal(Nit{Schema: NitSchema, URL: "https://app.example.com/orders", Selector: "main > p:nth-of-type(2)", Viewport: Viewport{W: 390, H: 844, DPR: 3}, Text: text})
 	return string(b)
+}
+
+func newRecorder() *httptest.ResponseRecorder { return httptest.NewRecorder() }
+
+// fakeSecret builds, at run time, an assignment the secret gate refuses: a
+// token-named key and a high-entropy value. Nothing secret-shaped is written
+// in this file.
+func fakeSecret() string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	v := make([]byte, 32)
+	for i := range v {
+		v[i] = alphabet[(i*7+3)%len(alphabet)]
+	}
+	return "deploy_" + "token = " + string(v)
 }

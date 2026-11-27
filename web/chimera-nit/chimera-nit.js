@@ -1,6 +1,7 @@
 /* <chimera-nit> — one dependency-free custom element (PRODUCT.md §2.6).
  *
- * It captures four things about a piece of feedback — the page URL, a CSS
+ * It captures four things about a piece of feedback — the page URL (origin
+ * and path; never the query or fragment, which can carry a token), a CSS
  * selector for the element it is about, the viewport, and the text — and
  * POSTs them to the inlet. It holds no credentials: the request is sent with
  * the browser's own session for the inlet's origin, which the edge verifies.
@@ -8,6 +9,8 @@
  * Attributes: endpoint (default "/v1/inlet/nit"), label (default "Nit").
  * Events (bubbling, composed): "chimera-nit:sent", "chimera-nit:error";
  * detail is { status, body }.
+ * Status words: SENT (a reconcile order), QUEUED (joined the Folio pull
+ * request), RECEIVED (triage inbox), DROPPED (loop guard), FAILED <code>.
  *
  * Runs under Content-Security-Policy: default-src 'self' — styles are a
  * constructed stylesheet adopted by the shadow root, and the DOM is built
@@ -50,7 +53,7 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent);
 .panel dd { margin: 0; font: 400 12px/1.5 var(--mono); overflow-wrap: anywhere; max-height: 4.5em; overflow: auto; }
 textarea { display: block; width: 100%; min-height: 96px; margin: 4px 0 8px; padding: 8px; background: var(--paper); border: 1px solid var(--rule); resize: vertical; }
 .send { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-.hint { position: fixed; left: 16px; bottom: 16px; margin: 0; padding: 4px 8px; background: var(--paper); border: 1px solid var(--rule); border-radius: 2px; font: 400 12px/1.5 var(--mono); color: var(--muted); max-width: calc(100vw - 32px); pointer-events: none; }
+.hint { position: fixed; right: 16px; bottom: 56px; margin: 0; padding: 4px 8px; background: var(--paper); border: 1px solid var(--rule); border-radius: 2px; font: 400 12px/1.5 var(--mono); color: var(--muted); max-width: calc(100vw - 32px); pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 `;
 
@@ -65,25 +68,43 @@ textarea { display: block; width: 100%; min-height: 96px; margin: 4px 0 8px; pad
     return n;
   };
 
+  // The page's own scripts and markup must not be able to steer the walk: a
+  // form control named "parentElement" shadows the property on its form. The
+  // prototype getters cannot be shadowed by markup.
+  const getter = (proto, name) => Object.getOwnPropertyDescriptor(proto, name).get;
+  const parentOf = getter(Node.prototype, "parentElement");
+  const typeOf = getter(Node.prototype, "nodeType");
+  const nameOf = getter(Element.prototype, "localName");
+  const idOf = getter(Element.prototype, "id");
+  const prevOf = getter(Element.prototype, "previousElementSibling");
+  const bytes = (s) => new TextEncoder().encode(s).length;
+
   // A selector that finds the element again: the nearest unique id, then a
-  // path of tag:nth-of-type(n) steps below it (or below html).
+  // path of tag:nth-of-type(n) steps below it (or below html). The walk stops
+  // after 64 ancestors, and the result is cut to the 1024 bytes the inlet
+  // accepts by dropping the least specific leading steps.
   const selectorOf = (node) => {
     const path = [];
-    for (let n = node; n && n.nodeType === 1 && n !== document.documentElement; n = n.parentElement) {
-      if (n.id) {
-        const id = "#" + CSS.escape(n.id);
-        if (document.querySelectorAll(id).length === 1) {
-          path.unshift(id);
-          return path.join(" > ");
+    let n = node;
+    for (let depth = 0; n && typeOf.call(n) === 1 && n !== document.documentElement && depth < 64; n = parentOf.call(n), depth++) {
+      const id = idOf.call(n);
+      if (id && id.length <= 128) {
+        const sel = "#" + CSS.escape(id);
+        if (document.querySelectorAll(sel).length === 1) {
+          path.unshift(sel);
+          n = null;
+          break;
         }
       }
+      const name = nameOf.call(n);
       let i = 1;
-      for (let s = n.previousElementSibling; s; s = s.previousElementSibling) {
-        if (s.localName === n.localName) i++;
+      for (let s = prevOf.call(n); s; s = prevOf.call(s)) {
+        if (nameOf.call(s) === name) i++;
       }
-      path.unshift(CSS.escape(n.localName) + ":nth-of-type(" + i + ")");
+      path.unshift(CSS.escape(name) + ":nth-of-type(" + i + ")");
     }
-    path.unshift("html");
+    if (n === document.documentElement) path.unshift("html");
+    while (path.length > 1 && bytes(path.join(" > ")) > 1024) path.shift();
     return path.join(" > ");
   };
 
@@ -213,7 +234,7 @@ textarea { display: block; width: 100%; min-height: 96px; margin: 4px 0 8px; pad
       this.say("SENDING");
       const nit = {
         schema: "chimera.nit/v1",
-        url: location.href,
+        url: location.origin + location.pathname,
         selector: this.selector,
         viewport: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio || 1 },
         text,
@@ -232,17 +253,24 @@ textarea { display: block; width: 100%; min-height: 96px; margin: 4px 0 8px; pad
       } catch (e) {
         /* status stays 0: the request never completed */
       }
-      const ok = status === 201 || status === 202;
+      // The inlet says what became of the nit; the word shown is its word.
+      let word = "";
+      if (status === 201 || status === 202) {
+        if (body.status === "task") word = "SENT";
+        else if (body.status === "folio") word = "QUEUED";
+        else if (body.status === "triage") word = "RECEIVED";
+      }
       const detail = { status, body };
-      if (ok) {
+      if (word) {
         this.text.value = "";
         this.close();
-        this.say(status === 201 ? "SENT" : "QUEUED");
+        this.say(word);
       } else {
+        // Not recorded: the text stays, so nothing the owner wrote is lost.
         this.send.disabled = false;
-        this.say(status ? "FAILED " + status : "FAILED", true);
+        this.say(body.status === "dropped" ? "DROPPED" : status ? "FAILED " + status : "FAILED", true);
       }
-      this.dispatchEvent(new CustomEvent(ok ? "chimera-nit:sent" : "chimera-nit:error", { bubbles: true, composed: true, detail }));
+      this.dispatchEvent(new CustomEvent(word ? "chimera-nit:sent" : "chimera-nit:error", { bubbles: true, composed: true, detail }));
     }
   }
 

@@ -355,3 +355,102 @@ func TestM2_2_GitAdapterKeepsReportsAndNotificationsOutOfGit(t *testing.T) {
 		t.Fatalf("missing log: %v %v", empty, err)
 	}
 }
+
+// TestM2_2_ATargetIsOneSegmentOfAQueueRef: the queue of "main" can never be
+// read as the queue of "main/00000001" or of "release", and a target with a
+// slash or a percent sign round-trips.
+func TestM2_2_ATargetIsOneSegmentOfAQueueRef(t *testing.T) {
+	evil := QueueRef("main", 1, "00000005/evil")
+	if _, ok := ChangeFromRef("main/00000001", evil, "abc"); ok {
+		t.Fatalf("%s decoded as a change for main/00000001", evil)
+	}
+	c, ok := ChangeFromRef("main", evil, "abc")
+	if !ok || c.Seq != 1 || c.Branch != "00000005/evil" {
+		t.Fatalf("%+v %v", c, ok)
+	}
+	ref := QueueRef("release/1.0", 3, "fix/x")
+	if ref != "refs/chimera/land/release%2F1.0/00000003/fix/x" || QueueRefPrefix("refs/heads/release/1.0") != "refs/chimera/land/release%2F1.0/" {
+		t.Fatalf("queue ref %q", ref)
+	}
+	c, ok = ChangeFromRef("release/1.0", ref, "abc")
+	if !ok || c.Target != "release/1.0" || c.Branch != "fix/x" || c.Seq != 3 {
+		t.Fatalf("%+v %v", c, ok)
+	}
+	if _, ok := ChangeFromRef("release", ref, "abc"); ok {
+		t.Fatal("a release/1.0 change decoded for target release")
+	}
+	if TargetSegment("a%2Fb") == TargetSegment("a/b") || TargetSegment("50%/x") != "50%25%2Fx" {
+		t.Fatal("TargetSegment is not injective")
+	}
+	// Every adapter keeps the two queues apart, and git accepts the ref name.
+	ctx := context.Background()
+	gh, _ := githubSubject(t)
+	for name, s := range map[string]subject{"fake": fakeSubject(t), "git": gitSubject(t, true), "github": gh} {
+		c1 := s.commit(Zero)
+		if err := s.forge.Push(ctx, "main", Zero, c1); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		for _, e := range []struct {
+			target, branch string
+		}{{"main", "00000005/evil"}, {"release/1.0", "fix/x"}, {"release", "y"}} {
+			if err := s.forge.Push(ctx, QueueRef(e.target, 1, e.branch), Zero, c1); err != nil {
+				t.Fatalf("%s: enqueue on %s: %v", name, e.target, err)
+			}
+		}
+		for target, branch := range map[string]string{"main": "00000005/evil", "release/1.0": "fix/x", "release": "y"} {
+			q, err := s.forge.Queue(ctx, target)
+			if err != nil || len(q) != 1 || q[0].Branch != branch || q[0].Target != target || q[0].Head != c1 {
+				t.Fatalf("%s: queue of %s: %+v %v", name, target, q, err)
+			}
+			if head, err := s.forge.Head(ctx, q[0].Ref); err != nil || head != c1 {
+				t.Fatalf("%s: head of %s: %s %v", name, q[0].Ref, head, err)
+			}
+		}
+		if q, err := s.forge.Queue(ctx, "main/00000001"); err != nil || len(q) != 0 {
+			t.Fatalf("%s: queue of main/00000001: %+v %v", name, q, err)
+		}
+	}
+}
+
+// TestM2_2_GitPushCallsALockALockNotAStaleRef: a lock a crashed writer left
+// behind does not move the ref, so Push must not answer ErrStale — a caller
+// would take the change for dequeued. Once the lock is gone the same push
+// goes through.
+func TestM2_2_GitPushCallsALockALockNotAStaleRef(t *testing.T) {
+	ctx := context.Background()
+	s := gitSubject(t, false)
+	g := s.forge.(*Git)
+	c1 := s.commit(Zero)
+	ref := QueueRef("main", 1, "feat")
+	if err := g.Push(ctx, ref, Zero, c1); err != nil {
+		t.Fatal(err)
+	}
+	git(t, g.Dir, "pack-refs", "--all")
+	lock := filepath.Join(g.Dir, ".git", "packed-refs.lock")
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := g.Push(ctx, ref, c1, Zero)
+	if err == nil || errors.Is(err, ErrStale) || !strings.Contains(err.Error(), "push "+ref) {
+		t.Fatalf("push under a leftover lock: %v", err)
+	}
+	if head, _ := g.Head(ctx, ref); head != c1 {
+		t.Fatal("the ref moved")
+	}
+	// A genuinely moved ref is still stale, lock or no lock.
+	if err := g.Push(ctx, ref, s.commit(Zero), Zero); !errors.Is(err, ErrStale) {
+		t.Fatalf("wrong old under a lock: %v", err)
+	}
+	// A lock that is released while Push waits is waited out.
+	done := make(chan error, 1)
+	go func() { done <- g.Push(ctx, ref, c1, Zero) }()
+	if err := os.Remove(lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("push after the lock went away: %v", err)
+	}
+	if _, err := g.Head(ctx, ref); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ref after delete: %v", err)
+	}
+}

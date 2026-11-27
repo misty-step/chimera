@@ -131,9 +131,10 @@ func runTrail(c *ctx) error {
 		return err
 	}
 	opts := trail.Options{RepoDir: root, Repo: c.repoName(cfg, root), Base: baseRev, Head: headRev, Store: store, RiskGlob: riskGlob(cfg)}
-	if globs := normGlobs(cfg.Ring0.Paths); len(globs) > 0 {
-		opts.Ring0 = func(p string) bool { return matchAny(globs, p) }
-	}
+	// The lock is Ring-0 whatever the globs say: a change to "Ring-0 or the
+	// lock" needs owner approval (PRODUCT.md, Ring-0 policy lock).
+	globs := normGlobs(cfg.Ring0.Paths)
+	opts.Ring0 = func(p string) bool { return p == LockPath || matchAny(globs, p) }
 	rep, err := trail.Build(c, opts)
 	if errors.Is(err, objstore.ErrUnavailable) {
 		// The store did not answer: whether the proof exists is not known.

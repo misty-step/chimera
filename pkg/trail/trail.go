@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -76,7 +78,7 @@ type Source struct {
 
 // RiskItem is one row of Open risk.
 type RiskItem struct {
-	Kind   string `json:"kind"`  // path | wide | verdict | orphan | intent
+	Kind   string `json:"kind"`  // path | wide | uncovered | verdict | orphan | intent
 	Class  string `json:"class"` // R2 or R3 for blast-radius rows; "" otherwise
 	Path   string `json:"path"`  // "" when the row is not about one file
 	Reason string `json:"reason"`
@@ -253,9 +255,10 @@ const (
 )
 
 // Build walks base..head and assembles the Trail. It returns an error only
-// when the range cannot be read or the store gave no answer (the error then
-// wraps objstore.ErrUnavailable); everything wrong with the evidence itself
-// is a row of the Report.
+// when the range cannot be read in full (unknown revisions, no shared
+// history, a shallow clone that cuts the range) or the store gave no answer
+// (the error then wraps objstore.ErrUnavailable); everything wrong with the
+// evidence itself is a row of the Report.
 func Build(ctx context.Context, o Options) (*Report, error) {
 	if o.Store == nil {
 		return nil, fmt.Errorf("store not configured")
@@ -276,18 +279,36 @@ func Build(ctx context.Context, o Options) (*Report, error) {
 		Missing: []Missing{}, Orphans: []Orphan{}, Verdicts: []Verdict{}, Media: []Media{}, Commits: []Commit{}, Capsules: []Capsule{},
 		media: map[string][]byte{}}
 
+	// A walk that a shallow clone cut short would report less than happened.
+	// Refuse it: nothing is proven about history that is not there.
+	shallow, err := shallowBoundaries(ctx, o.RepoDir)
+	if err != nil {
+		return nil, err
+	}
+	for _, gc := range commits {
+		if shallow[gc.SHA] {
+			return nil, fmt.Errorf("history is shallow at %s; fetch the full range", abbrevID(gc.SHA))
+		}
+	}
+	// The blast radius of the range is what head adds to the history it
+	// shares with base — not whatever base gained on its own since.
+	mergeBase := base
+	if len(commits) > 0 {
+		out, err := gitx.Run(ctx, o.RepoDir, "merge-base", base, head)
+		if err != nil || strings.TrimSpace(string(out)) == "" {
+			return nil, fmt.Errorf("%s and %s share no history", o.Base, o.Head)
+		}
+		mergeBase = strings.TrimSpace(string(out))
+		if shallow[mergeBase] {
+			return nil, fmt.Errorf("history is shallow at %s; fetch the full range", abbrevID(mergeBase))
+		}
+	}
+
 	// The current Folio: its acceptance IDs are what "the Intent" contains.
 	headFolio, folioErr := gitx.FolioIntent(ctx, o.RepoDir, head)
 	var folioIDs []string
 	if folioErr == nil {
-		var text strings.Builder
-		for _, name := range []string{"PRODUCT.md", "DESIGN.md"} {
-			if out, err := gitx.Run(ctx, o.RepoDir, "show", head+":"+name); err == nil {
-				text.Write(out)
-				text.WriteString("\n")
-			}
-		}
-		folioIDs = capsule.AcceptanceIDs(text.String())
+		folioIDs, _ = folioDeclared(ctx, o.RepoDir, head)
 	}
 
 	caps := map[string]*loaded{}        // address → verified Capsule
@@ -339,11 +360,15 @@ func Build(ctx context.Context, o Options) (*Report, error) {
 
 	// Pass 1: commits, trailers, Capsules, per-commit blast radius.
 	commitCaps := make([][]*loaded, len(commits)) // verified Capsules per commit
+	commitStats := make([]Stats, len(commits))    // each commit's own blast radius
+	commitPaths := make([][]string, len(commits)) // files each commit changes itself
+	index := map[string]int{}                     // commit SHA → position in the range
 	pathLast := map[string]int{}                  // path → last commit touching it
 	touched := map[string]bool{}
 	capFirst := map[string]int{} // address → first commit citing it
 	var capOrder []*loaded
 	for ci, gc := range commits {
+		index[gc.SHA] = ci
 		tr := gc.Chimera()
 		c := Commit{SHA: gc.SHA, Subject: gc.Subject, Intents: uniqStrings(tr.Intents), Capsules: uniqStrings(tr.Capsules)}
 		var reasons []string
@@ -402,30 +427,31 @@ func Build(ctx context.Context, o Options) (*Report, error) {
 			if !containsString(c.Intents, l.local.Manifest.Intent) {
 				reasons = append(reasons, fmt.Sprintf("capsule %s is bound to intent %s, not to this commit's", abbrevID(raw), abbrevID(l.local.Manifest.Intent)))
 			}
+			// A Capsule that judged nothing proves nothing (fail closed): one
+			// with no verdicts.json, an unreadable one, or an empty list.
+			if len(l.verdicts) == 0 {
+				reasons = append(reasons, fmt.Sprintf("capsule %s carries no verdicts", abbrevID(raw)))
+			}
 			if _, err := resolve(l.local.Manifest.Intent, ci); err != nil {
 				return nil, err
 			}
 			commitCaps[ci] = append(commitCaps[ci], l)
 		}
-		// Blast radius of this commit against its first parent. A merge is
-		// judged through the commits it brings and through the range diff.
-		if len(gc.Parents) <= 1 {
-			parent := ""
-			if len(gc.Parents) == 1 {
-				parent = gc.Parents[0]
-			}
-			stats, err := gitx.DiffStat(ctx, o.RepoDir, parent, gc.SHA)
-			if err != nil {
-				return nil, err
-			}
-			cls, st := classify(stats, o)
-			c.Risk, c.Files, c.Lines = cls, st.Files, st.Lines
-			for _, f := range stats {
-				pathLast[f.Path] = ci
-				touched[f.Path] = true
-			}
-		} else {
-			c.Risk = "R0"
+		// Blast radius of what this commit itself changes: against its parent,
+		// or — for a merge — the files that differ from every parent (what the
+		// merge wrote by hand; what it merely brings is judged commit by commit
+		// and through the range diff).
+		stats, err := ownChanges(ctx, o.RepoDir, gc)
+		if err != nil {
+			return nil, err
+		}
+		cls, st := classify(stats, o)
+		c.Risk, c.Files, c.Lines = cls, st.Files, st.Lines
+		commitStats[ci] = st
+		for _, f := range stats {
+			commitPaths[ci] = append(commitPaths[ci], f.Path)
+			pathLast[f.Path] = ci
+			touched[f.Path] = true
 		}
 		if len(reasons) > 0 {
 			c.Missing = true
@@ -438,7 +464,7 @@ func Build(ctx context.Context, o Options) (*Report, error) {
 	// An empty range reviews nothing, whatever the two trees differ by.
 	var rangeStats []gitx.FileStat
 	if len(commits) > 0 {
-		if rangeStats, err = gitx.DiffStat(ctx, o.RepoDir, base, head); err != nil {
+		if rangeStats, err = gitx.DiffStat(ctx, o.RepoDir, mergeBase, head); err != nil {
 			return nil, err
 		}
 	}
@@ -499,14 +525,69 @@ func Build(ctx context.Context, o Options) (*Report, error) {
 		r.OpenRisk = append(r.OpenRisk, RiskItem{Kind: "wide", Class: "R2",
 			Reason: fmt.Sprintf("wide change: %d files, %d packages, %d lines", r.Stats.Files, r.Stats.Packages, r.Stats.Lines),
 			Source: sourceFor(len(commits)-1, "")})
+	} else {
+		// A commit can be wide where the range is not (it adds what a later
+		// commit removes). The class says R2; the row says why.
+		for ci, st := range commitStats {
+			if isWide(st) {
+				r.OpenRisk = append(r.OpenRisk, RiskItem{Kind: "wide", Class: "R2",
+					Reason: fmt.Sprintf("wide commit %s: %d files, %d packages, %d lines", abbrevID(commits[ci].SHA), st.Files, st.Packages, st.Lines),
+					Source: sourceFor(ci, "")})
+			}
+		}
 	}
 
-	// Pass 2: verdicts, oldest Capsule first.
-	latest := map[[2]string]int{} // (acceptance ID, criterion) → index of its newest verdict
+	// Open risk, part 2: a Capsule is proof of the change its diff records.
+	// Files a commit changes that no Capsule it cites has in its diff were
+	// changed without evidence — by hand, or by a squash that swallowed an
+	// unproven commit. (A commit citing no verified Capsule is missing proof
+	// already; a merge is judged through the commits it brings.)
+	for ci, gc := range commits {
+		if len(commitCaps[ci]) == 0 || len(gc.Parents) > 1 {
+			continue
+		}
+		covered := map[string]bool{}
+		for _, l := range commitCaps[ci] {
+			for _, t := range capsule.TouchedPaths(l.local.Members[capsule.MemberDiff]) {
+				covered[t.Path] = true
+			}
+		}
+		var uncovered []string
+		for _, p := range commitPaths[ci] {
+			if !covered[p] {
+				uncovered = append(uncovered, p)
+			}
+		}
+		if len(uncovered) == 0 {
+			continue
+		}
+		names := uncovered
+		more := ""
+		if len(names) > maxUncoveredNames {
+			names, more = names[:maxUncoveredNames], ", …"
+		}
+		noun := "paths"
+		if len(uncovered) == 1 {
+			noun = "path"
+		}
+		r.OpenRisk = append(r.OpenRisk, RiskItem{Kind: "uncovered",
+			Reason: fmt.Sprintf("%d %s not in any cited capsule's diff: %s%s", len(uncovered), noun, strings.Join(names, ", "), more),
+			Source: Source{Capsule: commitCaps[ci][0].addr, Commit: gc.SHA}})
+	}
+
+	// Pass 2: verdicts, oldest Capsule first. A verdict is superseded only by
+	// a newer verdict of the same Intent, acceptance ID, and criterion whose
+	// commit descends from its own: on parallel branches both stand, and
+	// another Intent's Capsule decides nothing here.
+	descends := descent(commits, index)
+	type vkey struct{ intent, id, criterion string }
+	current := map[vkey][]int{} // verdicts that still decide, by key
+	var meta []vmeta            // parallel to r.Verdicts until they are sorted
 	var engineRows, orphanRows []RiskItem
 	for _, l := range capOrder {
 		ci := capFirst[l.addr]
 		info := intents[l.local.Manifest.Intent]
+		fam := family(l.local.Manifest.Intent)
 		for _, cv := range l.verdicts {
 			v := Verdict{ID: cv.ID, Criterion: cv.Criterion, Pass: cv.Pass, State: StatePass, Evidence: cv.Evidence,
 				Capsule: l.addr, Commit: commits[ci].SHA, Source: verdictSource(l, cv)}
@@ -517,12 +598,18 @@ func Build(ctx context.Context, o Options) (*Report, error) {
 			case orphan:
 				v.State = StateStale
 			}
-			if capsule.IsAcceptanceID(cv.ID) {
-				k := [2]string{cv.ID, cv.Criterion}
-				if prev, ok := latest[k]; ok && r.Verdicts[prev].Capsule != l.addr {
-					r.Verdicts[prev].SupersededBy = l.addr
+			// Orphan proof is proof of nothing: it neither supersedes nor is counted.
+			if capsule.IsAcceptanceID(cv.ID) && !orphan {
+				k := vkey{fam, cv.ID, cv.Criterion}
+				var still []int
+				for _, prev := range current[k] {
+					if r.Verdicts[prev].Capsule != l.addr && descends(ci, meta[prev].commit) {
+						r.Verdicts[prev].SupersededBy = l.addr
+						continue
+					}
+					still = append(still, prev)
 				}
-				latest[k] = len(r.Verdicts)
+				current[k] = append(still, len(r.Verdicts))
 			}
 			if orphan {
 				r.Orphans = append(r.Orphans, Orphan{ID: cv.ID, Criterion: cv.Criterion, Pass: cv.Pass, Intent: l.local.Manifest.Intent, Capsule: l.addr, Source: v.Source})
@@ -542,33 +629,53 @@ func Build(ctx context.Context, o Options) (*Report, error) {
 				engineRows = append(engineRows, item)
 			}
 			r.Verdicts = append(r.Verdicts, v)
+			meta = append(meta, vmeta{family: fam, commit: ci, orphan: orphan})
 		}
 	}
 	r.OpenRisk = append(append(r.OpenRisk, engineRows...), orphanRows...)
 
-	// Open risk, part 2: Intents that cannot anchor spec drift.
+	// Open risk, part 3: Intents that cannot anchor spec drift, and
+	// acceptance IDs the range itself deleted from the Folio — an ID that is
+	// gone can no longer be unmet, so its removal must be seen.
 	for _, id := range intentOrder {
 		if info := intents[id]; info.problem != "" {
 			r.OpenRisk = append(r.OpenRisk, RiskItem{Kind: "intent", Reason: info.problem, Source: sourceFor(intentCommit[id], "")})
 		}
 	}
+	if len(commits) > 0 {
+		was, byFile := folioDeclared(ctx, o.RepoDir, mergeBase)
+		now, _ := folioDeclared(ctx, o.RepoDir, head)
+		for _, id := range was {
+			if containsString(now, id) {
+				continue
+			}
+			ci, ok := pathLast[byFile[id]]
+			if !ok {
+				ci = len(commits) - 1
+			}
+			r.OpenRisk = append(r.OpenRisk, RiskItem{Kind: "intent", Path: byFile[id],
+				Reason: fmt.Sprintf("acceptance ID %s was removed from the Folio in this range", id), Source: sourceFor(ci, "")})
+		}
+	}
 
 	// Unmet intent: every acceptance ID of every resolved Intent, in Intent
-	// order, without a full set of passing current verdicts.
-	seenID := map[string]bool{}
+	// order, without a full set of passing current verdicts from Capsules
+	// bound to that Intent.
+	seenID := map[[2]string]bool{}
 	for _, id := range intentOrder {
 		info := intents[id]
 		if !info.resolved {
 			continue
 		}
+		fam := family(id)
 		for _, a := range info.ids {
-			if seenID[a] {
+			if seenID[[2]string{fam, a}] {
 				continue
 			}
-			seenID[a] = true
+			seenID[[2]string{fam, a}] = true
 			judged := false
-			for _, v := range r.Verdicts {
-				if v.ID != a || v.SupersededBy != "" {
+			for i, v := range r.Verdicts {
+				if v.ID != a || v.SupersededBy != "" || meta[i].family != fam || meta[i].orphan {
 					continue
 				}
 				judged = true
@@ -613,14 +720,206 @@ func Build(ctx context.Context, o Options) (*Report, error) {
 		}
 		r.Capsules = append(r.Capsules, c)
 	}
+	r.sanitize()
 	r.Check = r.check()
 	return r, nil
+}
+
+// maxUncoveredNames caps the paths one uncovered row spells out.
+const maxUncoveredNames = 5
+
+// vmeta is what the build remembers about a verdict besides the row itself.
+type vmeta struct {
+	family string // Intent family of the verdict's Capsule
+	commit int    // first commit citing that Capsule
+	orphan bool
+}
+
+// family groups Intent IDs that are one Intent for spec drift: every folio
+// Intent is "the Folio" (whose acceptance IDs are those at head; a commit
+// made against an older Folio is flagged separately), and each task Intent
+// is its own. A verdict only ever answers for its own family.
+func family(intent string) string {
+	if strings.HasPrefix(intent, "folio:") {
+		return "folio"
+	}
+	return intent
+}
+
+// folioDeclared returns the acceptance IDs the Folio declares at rev, in
+// order, and the Folio file that declares each.
+func folioDeclared(ctx context.Context, dir, rev string) (ids []string, byFile map[string]string) {
+	byFile = map[string]string{}
+	for _, name := range []string{"PRODUCT.md", "DESIGN.md"} {
+		out, err := gitx.Run(ctx, dir, "show", rev+":"+name)
+		if err != nil {
+			continue
+		}
+		for _, id := range capsule.AcceptanceIDs(string(out)) {
+			if _, ok := byFile[id]; !ok {
+				byFile[id] = name
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids, byFile
+}
+
+// shallowBoundaries returns the commits at which a shallow clone's history
+// is cut: their parents exist but are not here. It is empty for a full clone.
+func shallowBoundaries(ctx context.Context, dir string) (map[string]bool, error) {
+	out, err := gitx.Run(ctx, dir, "rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(string(out)) != "true" {
+		return nil, nil
+	}
+	out, err = gitx.Run(ctx, dir, "rev-parse", "--git-path", "shallow")
+	if err != nil {
+		return nil, err
+	}
+	p := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return nil, fmt.Errorf("history is shallow and its boundary cannot be read; fetch the full range")
+	}
+	set := map[string]bool{}
+	for _, line := range strings.Fields(string(data)) {
+		set[line] = true
+	}
+	return set, nil
+}
+
+// ownChanges lists the files a commit changes itself: against its parent
+// (the empty tree for a root), or, for a merge, the files that differ from
+// every parent.
+func ownChanges(ctx context.Context, dir string, gc gitx.Commit) ([]gitx.FileStat, error) {
+	parent := ""
+	if len(gc.Parents) > 0 {
+		parent = gc.Parents[0]
+	}
+	stats, err := gitx.DiffStat(ctx, dir, parent, gc.SHA)
+	if err != nil || len(gc.Parents) < 2 {
+		return stats, err
+	}
+	for _, other := range gc.Parents[1:] {
+		theirs, err := gitx.DiffStat(ctx, dir, other, gc.SHA)
+		if err != nil {
+			return nil, err
+		}
+		differs := map[string]bool{}
+		for _, f := range theirs {
+			differs[f.Path] = true
+		}
+		var both []gitx.FileStat
+		for _, f := range stats {
+			if differs[f.Path] {
+				both = append(both, f)
+			}
+		}
+		stats = both
+	}
+	return stats, nil
+}
+
+// descent returns a predicate: does commit a (by position in the range)
+// strictly descend from commit b? Ancestry is computed inside the range, from
+// the commits' own parents, and memoized per descendant.
+func descent(commits []gitx.Commit, index map[string]int) func(a, b int) bool {
+	reach := map[int]map[int]bool{}
+	return func(a, b int) bool {
+		if a == b {
+			return false
+		}
+		seen, ok := reach[a]
+		if !ok {
+			seen = map[int]bool{}
+			stack := []int{a}
+			for len(stack) > 0 {
+				n := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				for _, p := range commits[n].Parents {
+					if pi, in := index[p]; in && !seen[pi] {
+						seen[pi] = true
+						stack = append(stack, pi)
+					}
+				}
+			}
+			reach[a] = seen
+		}
+		return seen[b]
+	}
+}
+
+// sanitize strips control and escape bytes from every string of the Report
+// that came from Git or a Capsule: nothing a commit, a harness, or a
+// verifier wrote may steer a terminal or hide inside a page (DESIGN.md §1.4).
+// Hashes and addresses that passed validation are unchanged by it.
+func (r *Report) sanitize() {
+	p := printable
+	all := func(vs []string) {
+		for i := range vs {
+			vs[i] = p(vs[i])
+		}
+	}
+	src := func(s *Source) { s.Capsule, s.Commit = p(s.Capsule), p(s.Commit) }
+	r.Repo = p(r.Repo)
+	all(r.Intents)
+	for i := range r.OpenRisk {
+		it := &r.OpenRisk[i]
+		it.Path, it.Reason = p(it.Path), p(it.Reason)
+		src(&it.Source)
+	}
+	for i := range r.Unmet {
+		u := &r.Unmet[i]
+		u.ID, u.Criterion, u.Intent = p(u.ID), p(u.Criterion), p(u.Intent)
+		src(&u.Source)
+	}
+	for i := range r.Missing {
+		m := &r.Missing[i]
+		m.Subject = p(m.Subject)
+		all(m.Reasons)
+	}
+	for i := range r.Orphans {
+		o := &r.Orphans[i]
+		o.ID, o.Criterion, o.Intent = p(o.ID), p(o.Criterion), p(o.Intent)
+		src(&o.Source)
+	}
+	for i := range r.Verdicts {
+		v := &r.Verdicts[i]
+		v.ID, v.Criterion, v.Evidence = p(v.ID), p(v.Criterion), p(v.Evidence)
+		src(&v.Source)
+	}
+	for i := range r.Media {
+		m := &r.Media[i]
+		m.Name, m.Member, m.ID = p(m.Name), p(m.Member), p(m.ID)
+	}
+	for i := range r.Commits {
+		c := &r.Commits[i]
+		c.Subject = p(c.Subject)
+		all(c.Intents)
+		all(c.Capsules)
+	}
+	for i := range r.Capsules {
+		c := &r.Capsules[i]
+		c.Intent, c.Checkpoint = p(c.Intent), p(c.Checkpoint)
+		l := &c.Lane
+		l.Model, l.Harness, l.Skill, l.Prompt, l.Effort, l.ContextPolicy, l.Runner =
+			p(l.Model), p(l.Harness), p(l.Skill), p(l.Prompt), p(l.Effort), p(l.ContextPolicy), p(l.Runner)
+		for j := range c.Transcript {
+			c.Transcript[j].Text = p(c.Transcript[j].Text)
+		}
+	}
 }
 
 func newLoaded(addr string, local *capsule.Local) *loaded {
 	l := &loaded{addr: addr, local: local, keep: map[int]bool{}}
 	// Capsule.Get verified the bytes; a verdicts.json that does not parse is
-	// a Capsule without verdicts, and its Intent's IDs stay unmet.
+	// a Capsule without verdicts, which Build lists as missing proof.
 	l.verdicts, _ = local.Verdicts()
 	raw, ok := local.Members[capsule.MemberTranscript]
 	if !ok {

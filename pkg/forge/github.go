@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -17,7 +18,7 @@ const DefaultGitHubAPI = "https://api.github.com"
 
 // GitHub is the first Forge adapter (PRODUCT.md §2.5): the REST API over
 // net/http, no SDK. The token is sent only to API and never appears in an
-// error.
+// error; over plain http it is sent only to a loopback address.
 //
 // What is atomic and what is not. GitHub has no compare-and-swap on a ref,
 // so Push composes one:
@@ -111,6 +112,10 @@ func (g *GitHub) do(ctx context.Context, method, pathAndQuery string, body, out 
 	if err != nil {
 		return 0, "", fmt.Errorf("%s %s: invalid request", method, path)
 	}
+	if g.Token != "" && req.URL.Scheme != "https" && !loopback(req.URL.Hostname()) {
+		// A bearer token is never sent in the clear.
+		return 0, "", fmt.Errorf("%s %s: forge.api must be https; the token was not sent", method, path)
+	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	req.Header.Set("User-Agent", "chimera")
@@ -150,6 +155,16 @@ func (g *GitHub) do(ctx context.Context, method, pathAndQuery string, body, out 
 		}
 	}
 	return resp.StatusCode, nextLink(resp.Header.Get("Link")), nil
+}
+
+// loopback reports whether host is this machine: the only place a token may
+// travel over plain http (a local test double).
+func loopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func oneLine(s string) string {

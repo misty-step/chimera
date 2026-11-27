@@ -20,8 +20,15 @@ element a nit is about, the viewport, and the text, and POSTs them to the inlet 
   stylesheet adopted by the shadow root; the DOM is built with DOM calls. Serve the script from the page's
   own origin (the Go package `chimera/web/chimera-nit` embeds it as `chimeranit.Source`).
 - **Use.** Activate the trigger, click the element (or press Enter for the page's `main`), write the text,
-  `Send`. Escape cancels. The status reads `SENT` (a reconcile order was created), `QUEUED` (joined the Folio
-  pull request or the triage inbox), or `FAILED` with the HTTP status.
+  `Send`. Escape cancels. The status word is the inlet's answer: `SENT` (a reconcile order was created),
+  `QUEUED` (joined the Folio pull request), `RECEIVED` (triage inbox), `DROPPED` (the loop guard refused a
+  preview or bot; the text is kept), or `FAILED` with the HTTP status.
+- **What is captured.** The page's origin and path — never the query or fragment, which can carry a token —
+  a CSS selector (at most 1024 bytes, at most 64 ancestors deep, read through prototype getters so page
+  markup cannot steer it), the viewport, and the text.
+- **Same origin.** The inlet refuses a POST whose `Origin` is neither its own nor listed in
+  `inlet.allowed_origins`, and any body not declared `application/json`. Serve the page and the inlet behind
+  one edge (the edge must pass the page's `Host` through), or list the page's exact origin.
 - **Events.** `chimera-nit:sent` and `chimera-nit:error` bubble from the element with
   `detail: { status, body }`.
 - **Size.** At most 8 KB gzipped; `go test ./web/...` enforces it.

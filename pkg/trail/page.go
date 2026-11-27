@@ -348,11 +348,10 @@ func RenderHTML(r *Report) ([]byte, error) {
 		d.Missing = append(d.Missing, pageMissing{SHA: abbrevID(m.Commit), Subject: m.Subject, Missing: strings.Join(m.Reasons, "; ")})
 	}
 	for _, v := range r.Verdicts {
-		pv := pageVerdict{ID: v.ID, Criterion: v.Criterion, State: v.State, Source: r.link(v.Source, onPage)}
+		// Every row that is not PASS carries the accent rule, superseded or not.
+		pv := pageVerdict{ID: v.ID, Criterion: v.Criterion, State: v.State, Accent: v.State != StatePass, Source: r.link(v.Source, onPage)}
 		if v.SupersededBy != "" {
 			pv.Superseded = hex12(v.SupersededBy)
-		} else {
-			pv.Accent = v.State != StatePass
 		}
 		d.Verdicts = append(d.Verdicts, pv)
 	}
@@ -444,6 +443,17 @@ func WriteBundle(dir string, r *Report) error {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+	// A page written over an older one must not keep the older one's proof:
+	// regular files in media/ that this bundle does not hold are removed.
+	if entries, err := os.ReadDir(filepath.Join(dir, "media")); err == nil {
+		for _, e := range entries {
+			if _, keep := files["media/"+e.Name()]; !keep && e.Type().IsRegular() {
+				if err := os.Remove(filepath.Join(dir, "media", e.Name())); err != nil {
+					return fmt.Errorf("cannot remove stale media/%s", e.Name())
+				}
+			}
+		}
+	}
 	for _, name := range names {
 		p := filepath.Join(dir, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {

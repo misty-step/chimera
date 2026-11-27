@@ -128,6 +128,20 @@ func (d Decision) Validate() error {
 				return fmt.Errorf("edits too large")
 			}
 		}
+		// One edit may not be a directory another edit writes into: no tree
+		// holds both, and a proposal that can never be staged must not queue.
+		for p := range seen {
+			for i := strings.IndexByte(p, '/'); i >= 0; {
+				if seen[p[:i]] {
+					return fmt.Errorf("edit paths conflict: one is a directory of another")
+				}
+				next := strings.IndexByte(p[i+1:], '/')
+				if next < 0 {
+					break
+				}
+				i += 1 + next
+			}
+		}
 	default:
 		return fmt.Errorf("unknown decision kind")
 	}

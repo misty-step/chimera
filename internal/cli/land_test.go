@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"chimera/pkg/capsule"
 	"chimera/pkg/forge"
+	"chimera/pkg/gitx"
 	"chimera/pkg/land"
 	"chimera/pkg/objstore"
 )
@@ -222,7 +224,16 @@ func TestM2_2_LandEnqueueStatusRunEndToEnd(t *testing.T) {
 	if !bases[headA] || !bases[head] || bases[gitOut(t, bare, "rev-parse", "agent-b")] || bases[gitOut(t, bare, "rev-parse", "agent-c")] {
 		t.Fatalf("capsules were not recorded against the rebased commits: %v", bases)
 	}
-	if keys, _ := store.List(context.Background(), "land/acme/widget/"); len(keys) != 5 || keys[0] != "land/acme/widget/epoch-1" || !strings.HasPrefix(keys[1], "land/acme/widget/outcome/main/00000001-") {
+	// The store holds the epoch, a push intent per pushed change, and one
+	// outcome per change, keyed by sequence, head, and epoch.
+	keys, _ := store.List(context.Background(), "land/acme/widget/")
+	var kinds2 []string
+	for _, k := range keys {
+		kinds2 = append(kinds2, strings.SplitN(strings.TrimPrefix(k, "land/acme/widget/"), "/", 2)[0])
+	}
+	if strings.Join(kinds2, ",") != "attempt,attempt,epoch-1,outcome,outcome,outcome,outcome" ||
+		keys[0] != "land/acme/widget/attempt/main/00000001-"+headA[:12]+"/"+headA[:12]+".json" || keys[1] != "land/acme/widget/attempt/main/00000003-"+gitOut(t, bare, "rev-parse", "agent-c")[:12]+"/"+head[:12]+".json" ||
+		keys[3] != "land/acme/widget/outcome/main/00000001-"+headA[:12]+"-e1.json" {
 		t.Fatalf("land keys: %v", keys)
 	}
 
@@ -275,7 +286,7 @@ func TestM2_2_LandRunSquashOnASingleRepositoryAndRefusesACheckedOutTarget(t *tes
 	}
 	// The forge is this work tree and main is checked out: refuse before anything moves.
 	r := run(t, repo, nil, "land", "run", "--config", cfg, "--verifier", "check", "--repo", "acme/widget")
-	if r.code != ExitUsage || !strings.Contains(r.stderr, "main is checked out in this work tree") || gitOut(t, repo, "rev-parse", "main") != base {
+	if r.code != ExitUsage || !strings.Contains(r.stderr, "--target: main is checked out in "+repo+"; ") || gitOut(t, repo, "rev-parse", "main") != base {
 		t.Fatalf("checked-out target: %+v", r)
 	}
 	// The configured default verifier does not exist: usage, nothing attempted.
@@ -327,6 +338,8 @@ func TestM2_2_LandUsageErrorsExit2AndAnUnreachableForgeIsPending(t *testing.T) {
 		{"no store", "forge:\n  kind: git\nland:\n  target: main\n", nil, []string{"land", "status"}, "store"},
 		{"bad kind", storeYAML + "forge:\n  kind: svn\n", nil, []string{"land", "status"}, "forge.kind: must be github or git"},
 		{"bad strategy", storeYAML + "land:\n  strategy: merge\n", nil, []string{"land", "run"}, "land.strategy: must be rebase or squash"},
+		{"no repo name", storeYAML + "forge:\n  kind: git\nland:\n  target: main\nverifiers:\n  default: { command: [\"true\"] }\n", nil, []string{"land", "run"}, "--repo: repository name not configured; set forge.repo or pass --repo"},
+		{"no repo name for status", storeYAML + "forge:\n  kind: git\nland:\n  target: main\n", nil, []string{"land", "status"}, "--repo: repository name not configured"},
 		{"no branch", storeYAML + "forge:\n  kind: git\nland:\n  target: main\n", nil, []string{"land", "enqueue"}, "wrong number of arguments"},
 		{"two branches", storeYAML + "forge:\n  kind: git\nland:\n  target: main\n", nil, []string{"land", "status", "a", "b"}, "wrong number of arguments"},
 		{"unknown flag", storeYAML + "forge:\n  kind: git\nland:\n  target: main\n", nil, []string{"land", "enqueue", "x", "--squash"}, "unknown flag"},
@@ -373,5 +386,212 @@ func TestM2_2_LandUsageErrorsExit2AndAnUnreachableForgeIsPending(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(state, "store")); err == nil {
 		t.Fatal("a refused command wrote to the store")
+	}
+}
+
+// sshKey generates an ed25519 signing key. A machine without ssh-keygen
+// fails this test: owner approval cannot be shown to work there.
+func sshKey(t *testing.T, dir, name string) (priv, pub string) {
+	t.Helper()
+	priv = filepath.Join(dir, name)
+	cmd := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", name, "-f", priv)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen: %v\n%s", err, out)
+	}
+	raw, err := os.ReadFile(priv + ".pub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return priv, strings.TrimSpace(string(raw))
+}
+
+// TestM2_2_Ring0ApprovalBindsToTheVerifiedSignerNotTheCommitterHeader: a
+// Ring-0 change lands only when its commit carries a good signature made by
+// an owner. A signature by someone else the lander's Git trusts is not
+// approval, whatever the committer header claims; nor is no signature.
+func TestM2_2_Ring0ApprovalBindsToTheVerifiedSignerNotTheCommitterHeader(t *testing.T) {
+	seed := fixtureRepo(t, map[string]string{"README.md": "# widget\n", "verify/check.sh": landVerifier})
+	keys := t.TempDir()
+	ownerKey, ownerPub := sshKey(t, keys, "owner")
+	devKey, devPub := sshKey(t, keys, "dev")
+	// The lander verifies signatures of everyone who contributes; only one of them is an owner.
+	allowed := filepath.Join(keys, "allowed_signers")
+	if err := os.WriteFile(allowed, []byte("owner@example.com "+ownerPub+"\ndev@example.com "+devPub+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	signed := func(branch, key, committer, line string) string {
+		git(t, seed, "checkout", "-q", "-b", branch, "main")
+		writeFiles(t, seed, map[string]string{"verify/check.sh": landVerifier + "# " + line + "\n"})
+		git(t, seed, "add", "-A")
+		args := []string{"-c", "user.name=Example", "-c", "user.email=" + committer, "-c", "gpg.format=ssh"}
+		if key != "" {
+			args = append(args, "-c", "user.signingkey="+key, "commit", "-q", "-S", "-m", "verify: "+line)
+		} else {
+			args = append(args, "commit", "-q", "-m", "verify: "+line)
+		}
+		git(t, seed, args...)
+		return gitOut(t, seed, "rev-parse", "HEAD")
+	}
+	unsignedHead := signed("unsigned", "", "owner@example.com", "unsigned, committer header says owner")
+	spoofHead := signed("spoofed", devKey, "owner@example.com", "signed by dev, committer header says owner")
+	ownerHead := signed("approved", ownerKey, "dev@example.com", "signed by the owner")
+	git(t, seed, "checkout", "-q", "main")
+
+	root := t.TempDir()
+	bare, lander, state := filepath.Join(root, "forge.git"), filepath.Join(root, "lander"), filepath.Join(root, "state")
+	git(t, root, "clone", "-q", "--bare", seed, bare)
+	git(t, root, "clone", "-q", bare, lander)
+	git(t, lander, "config", "gpg.format", "ssh")
+	git(t, lander, "config", "gpg.ssh.allowedSignersFile", allowed)
+	// Git itself vouches for both signatures; only the signer differs.
+	if got := gitOut(t, lander, "log", "-1", "--format=%G? %GS %ce", spoofHead); got != "G dev@example.com owner@example.com" {
+		t.Fatalf("git on the spoofed commit: %q", got)
+	}
+	if got := gitOut(t, lander, "log", "-1", "--format=%G? %GS %ce", ownerHead); got != "G owner@example.com dev@example.com" {
+		t.Fatalf("git on the owner's commit: %q", got)
+	}
+	if got := gitOut(t, lander, "log", "-1", "--format=%G?", unsignedHead); got != "N" {
+		t.Fatalf("git on the unsigned commit: %q", got)
+	}
+	cfg := writeConfig(t, `tenant:
+  owner_emails: [Owner@Example.com]
+  repos: [acme/widget]
+store:
+  endpoint: file://`+filepath.Join(state, "store")+`
+ledger:
+  path: `+filepath.Join(state, "ledger.db")+`
+ring0:
+  paths: ["verify/**"]
+forge:
+  kind: git
+  dir: `+bare+`
+land:
+  target: main
+  remote: origin
+verifiers:
+  default: { command: ["sh", "verify/check.sh"], timeout: 30s }
+`)
+	for _, b := range []string{"unsigned", "spoofed", "approved"} {
+		if r := run(t, lander, nil, "land", "enqueue", b, "--config", cfg, "-q"); r.code != ExitOK {
+			t.Fatalf("enqueue %s: %+v", b, r)
+		}
+	}
+	r := run(t, lander, nil, "land", "run", "--config", cfg, "--json")
+	var env struct {
+		Code     int           `json:"code"`
+		Findings []land.Result `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &env); err != nil || r.code != ExitError || env.Code != 1 || len(env.Findings) != 3 {
+		t.Fatalf("run: %+v %v", r, err)
+	}
+	want := "touches Ring-0 (verify/check.sh); needs explicit owner approval"
+	for i, f := range env.Findings[:2] {
+		if f.State != land.Evicted || f.Reason != want || f.Capsule != "" {
+			t.Fatalf("finding %d: %+v", i, f)
+		}
+	}
+	if f := env.Findings[2]; f.State != land.Landed || f.Change.Branch != "approved" || string(f.Landed) != ownerHead || f.Capsule == "" {
+		t.Fatalf("the owner-signed change: %+v", f)
+	}
+	if got := gitOut(t, bare, "rev-parse", "main"); got != ownerHead {
+		t.Fatalf("main at %s, want the owner-signed commit %s", got, ownerHead)
+	}
+	if got := gitOut(t, bare, "show", "main:verify/check.sh"); !strings.HasSuffix(got, "# signed by the owner") {
+		t.Fatalf("verify/check.sh on main:\n%s", got)
+	}
+
+	// The same holds with no owners configured: nobody can approve.
+	if ownerSigned(lander, nil, func(string) bool { return true })(context.Background(), forge.Change{}, land.Rebased{Sources: []gitx.Commit{{SHA: ownerHead}}}, nil) {
+		t.Fatal("approved with no owners configured")
+	}
+	if signerAddress("Example Owner <Owner@Example.com>") != "owner@example.com" || signerAddress(" owner@example.com ") != "owner@example.com" || signerAddress("") != "" {
+		t.Fatal("signerAddress")
+	}
+}
+
+// TestM2_2_FailedNotificationsAreVisibleAndNeverClaimedDelivered: off a TTY,
+// under -q, a notification or check that could not be delivered is still one
+// stderr line each, it is in the JSON, and the summary does not say the
+// owners were told.
+func TestM2_2_FailedNotificationsAreVisibleAndNeverClaimedDelivered(t *testing.T) {
+	bare, lander, cfg, _ := landFixture(t)
+	for _, b := range []string{"agent-a", "agent-b"} {
+		if r := run(t, lander, nil, "land", "enqueue", b, "--config", cfg, "-q"); r.code != ExitOK {
+			t.Fatalf("enqueue %s: %+v", b, r)
+		}
+	}
+	// The forge's log cannot be written: <git-dir>/chimera is a file.
+	if err := os.WriteFile(filepath.Join(bare, "chimera"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := run(t, lander, nil, "land", "run", "--config", cfg, "-q", "--json")
+	if r.code != ExitError {
+		t.Fatalf("run: %+v", r)
+	}
+	noEscapes(t, r)
+	lines := strings.Split(strings.TrimSpace(r.stderr), "\n")
+	if len(lines) != 4 || lines[0] != "chimera: land run: warning: agent-a: report "+gitOut(t, bare, "rev-parse", "agent-a")[:12]+": forge log: cannot create directory" ||
+		!strings.HasPrefix(lines[1], "chimera: land run: warning: agent-b: notify agent-b: forge log: ") || !strings.HasPrefix(lines[2], "chimera: land run: warning: agent-b: report ") {
+		t.Fatalf("stderr:\n%s", r.stderr)
+	}
+	if strings.Contains(r.stderr, "each owner was told") || !strings.HasSuffix(lines[3], "; 1 landed on main; 1 of 1 owners could not be told the reason; see the warnings") {
+		t.Fatalf("summary: %s", lines[3])
+	}
+	var env struct {
+		Findings []land.Result `json:"findings"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &env); err != nil || len(env.Findings) != 2 || len(env.Findings[0].Warnings) != 1 || len(env.Findings[1].Warnings) != 2 ||
+		!strings.HasPrefix(env.Findings[1].Warnings[0], "notify agent-b: ") {
+		t.Fatalf("json: %s %v", r.stdout, err)
+	}
+	// What happened to the changes is unaffected and recorded.
+	if got := gitOut(t, bare, "log", "-1", "--format=%s", "main"); got != "flags: add a" {
+		t.Fatalf("main: %s", got)
+	}
+	if r := run(t, lander, nil, "land", "status", "agent-b", "--config", cfg); r.code != ExitError || !strings.Contains(r.stdout, "EVICTED  agent-b") {
+		t.Fatalf("status: %+v", r)
+	}
+}
+
+// TestM2_2_TwoClonesOfOneRepositoryShareOneEpochSequence: the landing state
+// is named after the repository, never after a clone's directory, so two
+// landers in differently named clones fence each other.
+func TestM2_2_TwoClonesOfOneRepositoryShareOneEpochSequence(t *testing.T) {
+	seed := fixtureRepo(t, map[string]string{"README.md": "# widget\n", "verify/check.sh": landVerifier})
+	root := t.TempDir()
+	bare, state := filepath.Join(root, "forge.git"), filepath.Join(root, "state")
+	git(t, root, "clone", "-q", "--bare", seed, bare)
+	body := "store:\n  endpoint: file://" + filepath.Join(state, "store") + "\nledger:\n  path: " + filepath.Join(state, "ledger.db") +
+		"\nforge:\n  kind: git\n  dir: " + bare + "\nland:\n  target: main\n  remote: origin\nverifiers:\n  default: { command: [\"sh\", \"verify/check.sh\"], timeout: 30s }\n"
+	unnamed := writeConfig(t, body)
+	named := writeConfig(t, strings.Replace(body, "forge:\n  kind: git\n", "forge:\n  kind: git\n  repo: acme/widget\n", 1))
+	for i, name := range []string{"lander-one", "lander-two"} {
+		dir := filepath.Join(root, name)
+		git(t, root, "clone", "-q", bare, dir)
+		// Without a name there is no guessing one from the directory.
+		if r := run(t, dir, nil, "land", "run", "--config", unnamed); r.code != ExitUsage || !strings.Contains(r.stderr, "repository name not configured") {
+			t.Fatalf("%s unnamed: %+v", name, r)
+		}
+		r := run(t, dir, nil, "land", "run", "--config", named, "--json")
+		var res landRunResult
+		if err := json.Unmarshal([]byte(r.stdout), &res); err != nil || r.code != ExitOK || res.Repo != "acme/widget" || res.Epoch != i+1 {
+			t.Fatalf("%s: %+v %v", name, r, err)
+		}
+	}
+	keys, _ := objstore.NewDir(filepath.Join(state, "store")).List(context.Background(), "land/")
+	if strings.Join(keys, ",") != "land/acme/widget/epoch-1,land/acme/widget/epoch-2" {
+		t.Fatalf("land keys: %v", keys)
+	}
+	// --repo wins over forge.repo; a linked work tree of the forge that has the
+	// target checked out is found, not just the current directory.
+	plain := filepath.Join(root, "plain")
+	git(t, root, "clone", "-q", seed, plain)
+	wt := filepath.Join(root, "linked")
+	git(t, plain, "checkout", "-q", "--detach")
+	git(t, plain, "worktree", "add", "-q", wt, "main")
+	local := writeConfig(t, strings.Replace(strings.Replace(body, "  dir: "+bare+"\n", "  dir: "+plain+"\n", 1), "  remote: origin\n", "", 1))
+	r := run(t, plain, nil, "land", "run", "--config", local, "--repo", "acme/other")
+	if r.code != ExitUsage || !strings.Contains(r.stderr, "--target: main is checked out in "+wt+"; ") {
+		t.Fatalf("linked work tree: %+v", r)
 	}
 }

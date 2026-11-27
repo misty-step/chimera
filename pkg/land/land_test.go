@@ -739,13 +739,25 @@ func TestM2_2_ConcurrentLandersAreFencedByEpochAndCompareAndSwap(t *testing.T) {
 	if finished == 0 || trains[0].Epoch() == trains[1].Epoch() || trains[0].Epoch()+trains[1].Epoch() != 3 {
 		t.Fatalf("epochs %d and %d, %d landers finished", trains[0].Epoch(), trains[1].Epoch(), finished)
 	}
-	// No epoch has pushes from two landers.
-	holder := map[int]string{}
+	// Every push was made by the lander the store's write-once epoch record
+	// names as that epoch's holder: no epoch has pushes from two landers.
 	for _, p := range pushes {
-		if h, ok := holder[p.epoch]; ok && h != p.lander {
-			t.Fatalf("epoch %d was pushed in by %s and %s", p.epoch, h, p.lander)
+		raw, err := fx.store.Get(ctx, fmt.Sprintf("land/acme/widget/epoch-%d", p.epoch))
+		if err != nil || !bytes.Contains(raw, []byte(`"holder":"`+p.lander+`"`)) {
+			t.Fatalf("push of %s by %s in epoch %d, whose record is %s (%v)", p.new.Short(), p.lander, p.epoch, raw, err)
 		}
-		holder[p.epoch] = p.lander
+	}
+	// Nothing was evicted or notified, and every outcome is a landing.
+	if n := fx.forge.Notifications(); len(n) != 0 {
+		t.Fatalf("notifications: %+v", n)
+	}
+	for _, r := range fx.forge.Reports() {
+		if r.Check.State != forge.Pass {
+			t.Fatalf("report: %+v", r)
+		}
+	}
+	if got := outcomeStates(t, fx); strings.Contains(got, Evicted) || strings.Count(got, Landed) < n {
+		t.Fatalf("outcomes: %s", got)
 	}
 	// Every change landed exactly once, on a linear history, and the queue is empty.
 	head, _ := fx.forge.Head(ctx, "main")
@@ -962,43 +974,602 @@ func TestM2_2_EnqueueIsIdempotentAndFIFO(t *testing.T) {
 	}
 }
 
+// hookForge lets a test stand between a lander and the forge's Push.
+type hookForge struct {
+	forge.Forge
+	before func(ref string, old, new forge.SHA) error // a non-nil error is returned instead of pushing
+	after  func(ref string, old, new forge.SHA, err error)
+}
+
+func (h hookForge) Push(ctx context.Context, ref string, old, new forge.SHA) error {
+	if h.before != nil {
+		if err := h.before(forge.RefName(ref), old, new); err != nil {
+			return err
+		}
+	}
+	err := h.Forge.Push(ctx, ref, old, new)
+	if h.after != nil {
+		h.after(forge.RefName(ref), old, new, err)
+	}
+	return err
+}
+
+type died struct{}
+
+// runUntilDeath runs a lander that is killed the instant its target push
+// succeeds: nothing after the compare-and-swap runs, exactly as for a
+// process that received SIGKILL there.
+func runUntilDeath(t *testing.T, fx *fixture, tr *Train) (pushed forge.SHA) {
+	t.Helper()
+	tr.Forge = hookForge{Forge: fx.forge, after: func(ref string, old, new forge.SHA, err error) {
+		if ref == "refs/heads/main" && err == nil {
+			pushed = new
+			panic(died{})
+		}
+	}}
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(died); !ok {
+				panic(r)
+			}
+		}
+	}()
+	tr.Run(context.Background(), false)
+	t.Fatal("the lander never pushed")
+	return
+}
+
+func outcomeStates(t *testing.T, fx *fixture) string {
+	t.Helper()
+	st, err := Status(context.Background(), fx.forge, fx.store, "acme/widget", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, o := range st.Outcomes {
+		out = append(out, o.Change.Branch+"="+o.State)
+	}
+	return strings.Join(out, ",")
+}
+
+func reportStates(fx *fixture) string {
+	var out []string
+	for _, r := range fx.forge.Reports() {
+		out = append(out, string(r.Check.State)+"@"+r.SHA.Short())
+	}
+	return strings.Join(out, ",")
+}
+
+// TestM2_2_LanderThatDiedAfterThePushConvergesOnTheNextRun: the push intent
+// stored before the compare-and-swap is what tells the next lander that the
+// change landed — as a fast-forward, rebased, or squashed — so it is
+// dequeued and recorded as LANDED, never evicted, never pushed again.
 func TestM2_2_LanderThatDiedAfterThePushConvergesOnTheNextRun(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name            string
+		squash, moveTip bool
+		twoCommits      bool
+	}{
+		{name: "fast-forward"},
+		{name: "rebased", moveTip: true},
+		{name: "squash of two commits on one line", squash: true, twoCommits: true},
+		{name: "squash rebased", squash: true, moveTip: true, twoCommits: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newFixture(t)
+			head := fx.commit(fx.base, map[string]string{"greet.sh": "#!/bin/sh\necho hello v1\n"}, trailered("greet: v1", 1))
+			if tc.twoCommits {
+				head = fx.commit(head, map[string]string{"greet.sh": "#!/bin/sh\necho hello v2\n"}, trailered("greet: v2", 2))
+			}
+			fx.forge.SetRef("agent-a", head)
+			c, _, _, err := Enqueue(ctx, fx.forge, "main", "agent-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.moveTip {
+				fx.forge.SetRef("main", fx.commit(fx.base, map[string]string{"other.txt": "o\n"}, "other: on main\n"))
+			}
+			l1 := fx.train(nil)
+			l1.Squash = tc.squash
+			pushed := runUntilDeath(t, fx, l1)
+			if q, _ := fx.forge.Queue(ctx, "main"); len(q) != 1 || outcomeStates(t, fx) != "" {
+				t.Fatalf("the dead lander dequeued or recorded: %+v %s", q, outcomeStates(t, fx))
+			}
+			if tc.name == "fast-forward" && pushed != c.Head {
+				t.Fatalf("not a fast-forward: %s", pushed.Short())
+			}
+			before, _ := targetPushes(fx.forge)
+
+			var log verifyLog
+			l2 := fx.train(&log)
+			l2.Holder, l2.Squash = "lander-2", tc.squash
+			sum, err := l2.Run(ctx, false)
+			if err != nil || sum.Epoch != 2 || len(sum.Results) != 1 {
+				t.Fatalf("recovery run: %+v %v", sum, err)
+			}
+			res := sum.Results[0]
+			if res.State != Landed || res.Reason != "already in main" || res.Landed != pushed || res.Capsule != capsuleOf(900+c.Seq) || len(res.Warnings) != 0 {
+				t.Fatalf("recovery result: %+v", res)
+			}
+			after, _ := targetPushes(fx.forge)
+			if len(after) != len(before) || len(log.seen) != 0 {
+				t.Fatalf("recovery pushed the target again (%d pushes) or verified (%d)", len(after)-len(before), len(log.seen))
+			}
+			if q, _ := fx.forge.Queue(ctx, "main"); len(q) != 0 || len(fx.forge.Notifications()) != 0 {
+				t.Fatalf("queue %+v, notifications %+v", q, fx.forge.Notifications())
+			}
+			// The one check is PASS, on the commit that was verified and pushed.
+			if got := reportStates(fx); got != "PASS@"+pushed.Short() {
+				t.Fatalf("reports: %s", got)
+			}
+			if got := outcomeStates(t, fx); got != "agent-a=LANDED" {
+				t.Fatalf("outcomes: %s", got)
+			}
+			if head, _ := fx.forge.Head(ctx, "main"); head != pushed {
+				t.Fatal("main moved during recovery")
+			}
+		})
+	}
+}
+
+// TestM2_2_NothingToLandIsAnEvictionAndNeverAPassOnAnUnverifiedCommit: with
+// no push intent in the target, a change that leaves nothing to apply is
+// evicted, and the target's head — which this train never verified — gets
+// no check.
+func TestM2_2_NothingToLandIsAnEvictionAndNeverAPassOnAnUnverifiedCommit(t *testing.T) {
+	ctx := context.Background()
+	fx := newFixture(t)
+	// A net no-op change: add a file, then remove it again.
+	c1 := fx.commit(fx.base, map[string]string{"x.txt": "x\n"}, "add x\n")
+	tree := fx.git("rev-parse", string(fx.base)+"^{tree}")
+	c2 := forge.SHA(fx.run(nil, "remove x\n", "commit-tree", tree, "-p", string(c1), "-F", "-"))
+	fx.forge.SetRef("noop", c2)
+	if _, _, _, err := Enqueue(ctx, fx.forge, "main", "noop"); err != nil {
+		t.Fatal(err)
+	}
+	// Someone pushes an unverified hotfix straight to main.
+	hot := fx.commit(fx.base, map[string]string{"hotfix.txt": "unverified\n"}, "hotfix\n")
+	fx.forge.SetRef("main", hot)
+	// A branch that is already an ancestor of main, queued without ever having been landed.
+	fx.forge.SetRef("behind", fx.base)
+	if _, _, _, err := Enqueue(ctx, fx.forge, "main", "behind"); err != nil {
+		t.Fatal(err)
+	}
+	var log verifyLog
+	sum, err := fx.train(&log).Run(ctx, false)
+	if err != nil || len(sum.Results) != 2 || sum.Count(Evicted) != 2 {
+		t.Fatalf("run: %+v %v", sum, err)
+	}
+	for _, r := range sum.Results {
+		if r.Reason != "nothing to land relative to main "+hot.Short() || !r.Landed.IsZero() {
+			t.Fatalf("result: %+v", r)
+		}
+	}
+	if len(log.seen) != 0 {
+		t.Fatalf("%d verifications", len(log.seen))
+	}
+	for _, r := range fx.forge.Reports() {
+		if r.Check.State == forge.Pass || r.SHA == hot {
+			t.Fatalf("a check was reported on a commit nobody verified: %+v", r)
+		}
+	}
+	if len(fx.forge.Notifications()) != 2 {
+		t.Fatalf("notifications: %+v", fx.forge.Notifications())
+	}
+}
+
+// TestM2_2_ADequeueFailureAfterLandingNeverEvictsAndNeverSpins: the change
+// is in the target. A failing dequeue stops the run with the landing
+// recorded; the next run finishes the same landing.
+func TestM2_2_ADequeueFailureAfterLandingNeverEvictsAndNeverSpins(t *testing.T) {
 	ctx := context.Background()
 	fx := newFixture(t)
 	c := fx.author("agent-a", fx.base, map[string]string{"a.txt": "a\n"}, trailered("docs: a", 1))
-	moved := fx.commit(fx.base, map[string]string{"other.txt": "o\n"}, "other: on main\n")
-	fx.forge.SetRef("main", moved)
-	// A lander rebased, verified, pushed the target — and died before dequeuing.
-	ws := &GitWorkspace{Dir: fx.dir}
-	rb, err := ws.Rebase(ctx, c, moved, false)
-	if err != nil || rb.SHA == c.Head || rb.Base != moved || strings.Join(rb.Paths, ",") != "a.txt" || len(rb.Sources) != 1 || len(rb.Commits) != 1 {
-		t.Fatalf("rebase: %+v %v", rb, err)
+	next := fx.author("agent-b", fx.base, map[string]string{"b.txt": "b\n"}, "docs: b\n")
+	failing := true
+	hook := func(ref string, old, new forge.SHA) error {
+		if ref == c.Ref && failing {
+			return fmt.Errorf("DELETE %s: status 403: resource not accessible", ref)
+		}
+		return nil
 	}
-	fx.forge.SetRef("main", rb.SHA)
+	tr := fx.train(nil)
+	tr.Forge = hookForge{Forge: fx.forge, before: hook}
+	done := make(chan struct{})
+	var sum Summary
+	var err error
+	go func() { sum, err = tr.Run(ctx, false); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the run spins on a change it cannot dequeue")
+	}
+	if err == nil || !strings.Contains(err.Error(), "dequeue agent-a after landing") || len(sum.Results) != 1 {
+		t.Fatalf("run: %+v %v", sum, err)
+	}
+	res := sum.Results[0]
+	if res.State != Landed || res.Landed != c.Head || len(res.Warnings) != 1 || !strings.HasPrefix(res.Warnings[0], "dequeue agent-a:") {
+		t.Fatalf("result: %+v", res)
+	}
+	if ok, _ := targetPushes(fx.forge); len(ok) != 1 || len(fx.forge.Notifications()) != 0 || outcomeStates(t, fx) != "agent-a=LANDED" {
+		t.Fatalf("pushes %d, notifications %d, outcomes %s", len(ok), len(fx.forge.Notifications()), outcomeStates(t, fx))
+	}
+	// The change behind it was not touched, and is still queued behind it.
+	if q, _ := fx.forge.Queue(ctx, "main"); len(q) != 2 || q[0] != c || q[1] != next {
+		t.Fatalf("queue: %+v", q)
+	}
+	// The forge recovers: the same lander finishes the landing and goes on.
+	failing = false
+	sum, err = tr.Run(ctx, false)
+	if err != nil || len(sum.Results) != 2 || sum.Results[0].State != Landed || sum.Results[0].Reason != "already in main" || sum.Results[0].Landed != c.Head ||
+		sum.Results[1].State != Landed {
+		t.Fatalf("second run: %+v %v", sum, err)
+	}
+	if ok, _ := targetPushes(fx.forge); len(ok) != 2 || len(fx.forge.Notifications()) != 0 {
+		t.Fatalf("%d target pushes, %d notifications", len(ok), len(fx.forge.Notifications()))
+	}
+	for _, r := range fx.forge.Reports() {
+		if r.Check.State != forge.Pass {
+			t.Fatalf("a landed change got a failing check: %+v", r)
+		}
+	}
+}
+
+// TestM2_2_APushThatErroredButAppliedIsFoundByItsIntent: the forge moved the
+// ref and then failed to say so.
+func TestM2_2_APushThatErroredButAppliedIsFoundByItsIntent(t *testing.T) {
+	ctx := context.Background()
+	fx := newFixture(t)
+	c := fx.author("agent-a", fx.base, map[string]string{"a.txt": "a\n"}, "docs: a\n")
+	fx.forge.SetRef("main", fx.commit(fx.base, map[string]string{"other.txt": "o\n"}, "other: on main\n"))
+	lost := false
+	var applied forge.SHA
+	tr := fx.train(nil)
+	tr.Forge = hookForge{Forge: fx.forge, before: func(ref string, old, new forge.SHA) error {
+		if ref == "refs/heads/main" && !lost {
+			lost = true
+			if err := fx.forge.Push(ctx, ref, old, new); err != nil {
+				return err
+			}
+			applied = new
+			return fmt.Errorf("PATCH %s: no answer from the forge: %w", ref, forge.ErrUnavailable)
+		}
+		return nil
+	}}
+	sum, err := tr.Run(ctx, false)
+	if !errors.Is(err, forge.ErrUnavailable) || len(sum.Results) != 0 {
+		t.Fatalf("first run: %+v %v", sum, err)
+	}
+	if q, _ := fx.forge.Queue(ctx, "main"); len(q) != 1 || q[0] != c {
+		t.Fatalf("queue: %+v", q)
+	}
 	var log verifyLog
-	sum, err := fx.train(&log).Run(ctx, false)
-	if err != nil || len(sum.Results) != 1 || sum.Results[0].State != Landed || sum.Results[0].Reason != "already in main" || sum.Results[0].Landed != rb.SHA {
-		t.Fatalf("recovery run: %+v %v", sum, err)
+	sum, err = fx.train(&log).Run(ctx, false)
+	if err != nil || len(sum.Results) != 1 || sum.Results[0].State != Landed || sum.Results[0].Landed != applied || len(log.seen) != 0 {
+		t.Fatalf("second run: %+v %v", sum, err)
 	}
-	if ok, _ := targetPushes(fx.forge); len(ok) != 0 || len(log.seen) != 0 {
-		t.Fatalf("recovery pushed the target again (%d pushes, %d verifications)", len(ok), len(log.seen))
+	if ok, _ := targetPushes(fx.forge); len(ok) != 1 || len(fx.forge.Notifications()) != 0 {
+		t.Fatalf("%d target pushes, %d notifications", len(ok), len(fx.forge.Notifications()))
 	}
-	if q, _ := fx.forge.Queue(ctx, "main"); len(q) != 0 || len(fx.forge.Notifications()) != 0 {
-		t.Fatalf("queue %+v, notifications %+v", q, fx.forge.Notifications())
+}
+
+// TestM2_2_ASecondLanderBetweenPushAndDequeueSeesALanding: lander 2 takes
+// over in the instant between lander 1's push and its dequeue. Neither may
+// evict the change that is now main's head.
+func TestM2_2_ASecondLanderBetweenPushAndDequeueSeesALanding(t *testing.T) {
+	ctx := context.Background()
+	fx := newFixture(t)
+	c := fx.author("agent-a", fx.base, map[string]string{"a.txt": "a\n"}, trailered("docs: a", 1))
+	l1, l2 := fx.train(nil), fx.train(nil)
+	l2.Holder = "lander-2"
+	var sum2 Summary
+	var err2 error
+	ran := false
+	l1.Forge = hookForge{Forge: fx.forge, after: func(ref string, old, new forge.SHA, err error) {
+		if ref == "refs/heads/main" && err == nil && !ran {
+			ran = true
+			sum2, err2 = l2.Run(ctx, false)
+		}
+	}}
+	sum1, err1 := l1.Run(ctx, false)
+	if !ran || err2 != nil || len(sum2.Results) != 1 || sum2.Results[0].State != Landed || sum2.Results[0].Landed != c.Head {
+		t.Fatalf("lander 2: %+v %v", sum2, err2)
 	}
-	st, _ := Status(ctx, fx.forge, fx.store, "acme/widget", "main")
-	if len(st.Outcomes) != 1 || st.Outcomes[0].State != Landed {
-		t.Fatalf("outcomes: %+v", st.Outcomes)
+	// Lander 1 finishes its own landing (the queue ref is already gone), then
+	// finds itself fenced or the queue empty.
+	if (err1 != nil && !errors.Is(err1, ErrFenced)) || len(sum1.Results) != 1 || sum1.Results[0].State != Landed {
+		t.Fatalf("lander 1: %+v %v", sum1, err1)
+	}
+	if len(fx.forge.Notifications()) != 0 {
+		t.Fatalf("a landed change was notified as evicted: %+v", fx.forge.Notifications())
+	}
+	for _, r := range fx.forge.Reports() {
+		if r.Check.State != forge.Pass || r.SHA != c.Head {
+			t.Fatalf("report: %+v", r)
+		}
+	}
+	if got := outcomeStates(t, fx); strings.Contains(got, Evicted) || !strings.Contains(got, "agent-a=LANDED") {
+		t.Fatalf("outcomes: %s", got)
+	}
+	if ok, _ := targetPushes(fx.forge); len(ok) != 1 {
+		t.Fatalf("%d target pushes", len(ok))
+	}
+}
+
+// TestM2_2_AChangeThatCannotBeRebasedOrVerifiedIsEvictedNotStuck: the queue
+// never stalls on one change's own defect.
+func TestM2_2_AChangeThatCannotBeRebasedOrVerifiedIsEvictedNotStuck(t *testing.T) {
+	ctx := context.Background()
+	// A file name no file system here can check out.
+	fx := newFixture(t)
+	long := strings.Repeat("n", 300) + ".txt"
+	bad := fx.author("agent-bad", fx.base, map[string]string{long: "x\n"}, "bad: long name\n")
+	fx.author("agent-good", fx.base, map[string]string{"g.txt": "g\n"}, "good\n")
+	fx.forge.SetRef("main", fx.commit(fx.base, map[string]string{"o.txt": "o\n"}, "other\n"))
+	sum, err := fx.train(nil).Run(ctx, false)
+	if err != nil || len(sum.Results) != 2 || sum.Results[0].State != Evicted || sum.Results[1].State != Landed {
+		t.Fatalf("run: %+v %v", sum, err)
+	}
+	if !strings.HasPrefix(sum.Results[0].Reason, "could not be rebased onto main: ") || strings.Contains(sum.Results[0].Reason, "\n") {
+		t.Fatalf("reason: %q", sum.Results[0].Reason)
+	}
+	if n := fx.forge.Notifications(); len(n) != 1 || n[0].Change != bad {
+		t.Fatalf("notifications: %+v", n)
+	}
+	if got := fx.git("worktree", "list", "--porcelain"); strings.Count(got, "worktree ") != 1 {
+		t.Fatalf("worktrees left behind:\n%s", got)
 	}
 
-	// A branch with nothing beyond the target is not a landing: it is evicted.
-	fx.forge.SetRef("empty", rb.SHA)
-	if _, _, _, err := Enqueue(ctx, fx.forge, "main", "empty"); err != nil {
+	// A verifier whose output trips the secret gate: no Capsule can be
+	// recorded, which is a failed verification, not a stuck queue.
+	fx = newFixture(t)
+	key := "AKIA" + "IOSFODNN7" + "EXAMPLE"
+	fx.author("agent-leak", fx.base, map[string]string{"fixture.txt": "aws_access_key_id = " + key + "\n"}, "test: add fixture\n")
+	fx.author("agent-good", fx.base, map[string]string{"g.txt": "g\n"}, "good\n")
+	tr := fx.train(nil)
+	tr.Verify = LaneVerifier{RepoDir: fx.dir, Repo: "acme/widget", Target: "main", Deps: laneDeps(fx.store), Epoch: tr.Epoch,
+		Verifier: lane.Command{Argv: []string{"sh", "-c", "cat fixture.txt 2>/dev/null; exit 0"}, Timeout: 20 * time.Second}}.Verify
+	sum, err = tr.Run(ctx, false)
+	if err != nil || len(sum.Results) != 2 || sum.Results[0].State != Evicted || sum.Results[1].State != Landed {
+		t.Fatalf("run: %+v %v", sum, err)
+	}
+	if r := sum.Results[0].Reason; !strings.HasPrefix(r, "verification recorded no capsule (") || !strings.Contains(r, "secret gate") || strings.Contains(r, key) {
+		t.Fatalf("reason: %q", r)
+	}
+
+	// A store that does not answer is nobody's fault: nothing is evicted.
+	fx = newFixture(t)
+	c := fx.author("agent-a", fx.base, map[string]string{"a.txt": "a\n"}, "docs: a\n")
+	tr = fx.train(nil)
+	deps := laneDeps(fx.store)
+	deps.Push = func(context.Context, string) error { return &objstore.UnavailableError{Op: "PUT", Key: "cas/x"} }
+	tr.Verify = LaneVerifier{RepoDir: fx.dir, Repo: "acme/widget", Target: "main", Deps: deps,
+		Verifier: lane.Command{Argv: []string{"true"}, Timeout: 20 * time.Second}}.Verify
+	sum, err = tr.Run(ctx, false)
+	if !errors.Is(err, objstore.ErrUnavailable) || len(sum.Results) != 0 {
+		t.Fatalf("run: %+v %v", sum, err)
+	}
+	if q, _ := fx.forge.Queue(ctx, "main"); len(q) != 1 || q[0] != c || len(fx.forge.Notifications()) != 0 {
+		t.Fatalf("queue: %+v", q)
+	}
+	// Nor is a runner the lander does not have.
+	deps = laneDeps(fx.store)
+	deps.Runner = func(string) (lane.Runner, error) { return nil, fmt.Errorf("runner boat is not configured") }
+	tr = fx.train(nil)
+	tr.Verify = LaneVerifier{RepoDir: fx.dir, Repo: "acme/widget", Target: "main", Deps: deps, Verifier: lane.Command{Argv: []string{"true"}}}.Verify
+	if sum, err = tr.Run(ctx, false); err == nil || len(sum.Results) != 0 || len(fx.forge.Notifications()) != 0 {
+		t.Fatalf("run: %+v %v", sum, err)
+	}
+}
+
+// TestM2_2_EveryOutcomeIsKeptAndTheNewestWins: sequence numbers restart when
+// a queue drains, so the same commit can be evicted and later land under the
+// same queue ref. Both outcomes are kept; the newest is first.
+func TestM2_2_EveryOutcomeIsKeptAndTheNewestWins(t *testing.T) {
+	ctx := context.Background()
+	fx := newFixture(t)
+	c := fx.author("agent-a", fx.base, map[string]string{"a.txt": "a\n"}, "docs: a\n")
+	clock := time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC)
+	tr := fx.train(nil)
+	tr.Now = func() time.Time { return clock }
+	tr.Verify = func(context.Context, forge.Change, Rebased) (Verification, error) {
+		return Verification{Pass: false, Reason: "flaky"}, nil
+	}
+	if sum, err := tr.Run(ctx, false); err != nil || sum.Count(Evicted) != 1 {
+		t.Fatalf("%+v %v", sum, err)
+	}
+	again, _, created, err := Enqueue(ctx, fx.forge, "main", "agent-a")
+	if err != nil || !created || again != c {
+		t.Fatalf("re-enqueue reused %+v, want the same ref as %+v (%v)", again, c, err)
+	}
+	// Same lander, same epoch, same second: the keys still differ.
+	tr.Verify = func(context.Context, forge.Change, Rebased) (Verification, error) {
+		return Verification{Pass: true}, nil
+	}
+	if sum, err := tr.Run(ctx, false); err != nil || sum.Count(Landed) != 1 {
+		t.Fatalf("%+v %v", sum, err)
+	}
+	if got := outcomeStates(t, fx); got != "agent-a=LANDED,agent-a=EVICTED" {
+		t.Fatalf("outcomes, newest first: %s", got)
+	}
+	keys, _ := fx.store.List(ctx, "land/acme/widget/outcome/main/")
+	want := fmt.Sprintf("land/acme/widget/outcome/main/00000001-%s-e1", c.Head.Short())
+	if len(keys) != 2 || keys[0] != want+"-2.json" || keys[1] != want+".json" {
+		t.Fatalf("outcome keys: %v", keys)
+	}
+	// A later epoch sorts above an earlier one at the same instant.
+	fx.forge.SetRef("agent-b", fx.commit(fx.base, map[string]string{"a.txt": "conflict\n"}, "docs: b\n"))
+	if _, _, _, err := Enqueue(ctx, fx.forge, "main", "agent-b"); err != nil {
 		t.Fatal(err)
 	}
+	l2 := fx.train(nil)
+	l2.Now = func() time.Time { return clock }
+	if sum, err := l2.Run(ctx, false); err != nil || sum.Epoch != 2 || sum.Count(Evicted) != 1 {
+		t.Fatalf("%+v %v", sum, err)
+	}
+	if got := outcomeStates(t, fx); got != "agent-b=EVICTED,agent-a=LANDED,agent-a=EVICTED" {
+		t.Fatalf("outcomes, newest first: %s", got)
+	}
+}
+
+// TestM2_2_AnEvictionOnceBegunIsFinishedEvenIfTheRunIsCancelled: the owner
+// is told and the outcome recorded; the change is never silently dropped.
+func TestM2_2_AnEvictionOnceBegunIsFinishedEvenIfTheRunIsCancelled(t *testing.T) {
+	fx := newFixture(t)
+	fx.author("agent-a", fx.base, map[string]string{"greet.sh": "#!/bin/sh\necho a\n"}, "a\n")
+	b := fx.author("agent-b", fx.base, map[string]string{"greet.sh": "#!/bin/sh\necho b\n"}, "b\n")
+	ctx, cancel := context.WithCancel(context.Background())
+	tr := fx.train(nil)
+	tr.Forge = hookForge{Forge: fx.forge, after: func(ref string, old, new forge.SHA, err error) {
+		if ref == b.Ref && new.IsZero() {
+			cancel() // the interrupt arrives right after the dequeue
+		}
+	}}
+	sum, err := tr.Run(ctx, false)
+	if !errors.Is(err, context.Canceled) || len(sum.Results) != 2 || sum.Results[1].State != Evicted {
+		t.Fatalf("run: %+v %v", sum, err)
+	}
+	if n := fx.forge.Notifications(); len(n) != 1 || n[0].Change != b {
+		t.Fatalf("notifications: %+v", n)
+	}
+	if got := reportStates(fx); !strings.HasSuffix(got, "FAIL@"+b.Head.Short()) {
+		t.Fatalf("reports: %s", got)
+	}
+	if got := outcomeStates(t, fx); !strings.Contains(got, "agent-b=EVICTED") {
+		t.Fatalf("outcomes: %s", got)
+	}
+	// The outcome is recorded before the queue ref goes.
+	if q, _ := fx.forge.Queue(context.Background(), "main"); len(q) != 0 {
+		t.Fatalf("queue: %+v", q)
+	}
+}
+
+// TestM2_2_ALanderFencedWhileVerifyingNeitherPushesNorEvicts: a higher epoch
+// appears while lander 1 is inside its verification. Whatever the verdict,
+// lander 1 writes nothing to the forge afterwards. This test fails if the
+// fence before the push, or the fence before an eviction, is removed.
+func TestM2_2_ALanderFencedWhileVerifyingNeitherPushesNorEvicts(t *testing.T) {
+	ctx := context.Background()
+	for _, pass := range []bool{true, false} {
+		fx := newFixture(t)
+		fx.store = s3Store(t)
+		c := fx.author("agent-a", fx.base, map[string]string{"a.txt": "a\n"}, "docs: a\n")
+		l1, l2 := fx.train(nil), fx.train(nil)
+		l2.Holder = "lander-2"
+		l1.Verify = func(context.Context, forge.Change, Rebased) (Verification, error) {
+			if e, err := l2.Acquire(ctx); err != nil || e != 2 {
+				t.Errorf("lander 2 acquire: %d %v", e, err)
+			}
+			return Verification{Pass: pass, Reason: "verifier failed"}, nil
+		}
+		before := len(fx.forge.Pushes())
+		sum, err := l1.Run(ctx, false)
+		if !errors.Is(err, ErrFenced) || len(sum.Results) != 0 || sum.Epoch != 1 {
+			t.Fatalf("pass=%v: %+v %v", pass, sum, err)
+		}
+		if n := len(fx.forge.Pushes()) - before; n != 0 {
+			t.Fatalf("pass=%v: the fenced lander made %d forge writes: %+v", pass, n, fx.forge.Pushes()[before:])
+		}
+		if len(fx.forge.Notifications()) != 0 || len(fx.forge.Reports()) != 0 || outcomeStates(t, fx) != "" {
+			t.Fatalf("pass=%v: notifications %d, reports %d, outcomes %q", pass, len(fx.forge.Notifications()), len(fx.forge.Reports()), outcomeStates(t, fx))
+		}
+		if head, _ := fx.forge.Head(ctx, "main"); head != fx.base {
+			t.Fatalf("pass=%v: main moved", pass)
+		}
+		if q, _ := fx.forge.Queue(ctx, "main"); len(q) != 1 || q[0] != c {
+			t.Fatalf("pass=%v: queue %+v", pass, q)
+		}
+		// Not even a push intent was left behind.
+		if keys, _ := fx.store.List(ctx, "land/acme/widget/attempt/"); len(keys) != 0 {
+			t.Fatalf("pass=%v: push intents: %v", pass, keys)
+		}
+	}
+}
+
+// TestM2_2_TrailersOfCommitsARebaseDoesNotReplayAreNeverLost: a merge commit
+// carrying the evidence trailers is rejected by a rebase landing (with the
+// way out), and its trailers ride in the union of a squash landing.
+func TestM2_2_TrailersOfCommitsARebaseDoesNotReplayAreNeverLost(t *testing.T) {
+	ctx := context.Background()
+	build := func(fx *fixture) {
+		c1 := fx.commit(fx.base, map[string]string{"one.txt": "1\n"}, "feat: one\n")
+		s1 := fx.commit(fx.base, map[string]string{"side.txt": "s\n"}, "feat: side\n")
+		env := []string{"GIT_INDEX_FILE=" + filepath.Join(t.TempDir(), "index")}
+		fx.run(env, "", "read-tree", string(c1))
+		blob := fx.run(nil, "s\n", "hash-object", "-w", "--stdin")
+		fx.run(env, "", "update-index", "--add", "--cacheinfo", "100644,"+blob+",side.txt")
+		tree := fx.run(env, "", "write-tree")
+		m := forge.SHA(fx.run(nil, trailered("merge: side into feature", 7), "commit-tree", tree, "-p", string(c1), "-p", string(s1), "-F", "-"))
+		fx.forge.SetRef("feature", m)
+		if _, _, _, err := Enqueue(ctx, fx.forge, "main", "feature"); err != nil {
+			t.Fatal(err)
+		}
+		fx.forge.SetRef("main", fx.commit(fx.base, map[string]string{"o.txt": "o\n"}, "other\n"))
+	}
+	fx := newFixture(t)
+	build(fx)
+	sum, err := fx.train(nil).Run(ctx, false)
+	if err != nil || sum.Count(Evicted) != 1 || !strings.Contains(sum.Results[0].Reason, "rebase would drop the trailer Chimera-Intent") ||
+		!strings.Contains(sum.Results[0].Reason, "--squash") {
+		t.Fatalf("rebase run: %+v %v", sum, err)
+	}
+	if ok, _ := targetPushes(fx.forge); len(ok) != 0 {
+		t.Fatal("a change that would lose trailers was pushed")
+	}
+	fx = newFixture(t)
+	build(fx)
+	tr := fx.train(nil)
+	tr.Squash = true
+	sum, err = tr.Run(ctx, false)
+	if err != nil || sum.Count(Landed) != 1 {
+		t.Fatalf("squash run: %+v %v", sum, err)
+	}
+	if got := fx.trailers(sum.Results[0].Landed); got != "Chimera-Intent: "+intentOf(1)+"\nChimera-Capsule: "+capsuleOf(7) {
+		t.Fatalf("squash trailers:\n%s", got)
+	}
+	if fx.files(sum.Results[0].Landed) != "README.md greet.sh o.txt one.txt side.txt verify/check.sh" {
+		t.Fatalf("squash tree: %s", fx.files(sum.Results[0].Landed))
+	}
+
+	// A commit already upstream is left out by the rebase; its trailers are
+	// in the target's history, so nothing is lost and the rest lands.
+	fx = newFixture(t)
+	a := fx.commit(fx.base, map[string]string{"a.txt": "a\n"}, trailered("docs: a", 1))
+	b := fx.commit(a, map[string]string{"b.txt": "b\n"}, trailered("docs: b", 2))
+	fx.forge.SetRef("feature", b)
+	if _, _, _, err := Enqueue(ctx, fx.forge, "main", "feature"); err != nil {
+		t.Fatal(err)
+	}
+	other := fx.commit(fx.base, map[string]string{"o.txt": "o\n"}, "other\n")
+	fx.forge.SetRef("main", fx.commit(other, map[string]string{"a.txt": "a\n"}, trailered("docs: a", 1))) // a, cherry-picked
 	sum, err = fx.train(nil).Run(ctx, false)
-	if err != nil || len(sum.Results) != 1 || sum.Results[0].State != Evicted || !strings.HasPrefix(sum.Results[0].Reason, "nothing to land") {
-		t.Fatalf("empty change: %+v %v", sum, err)
+	if err != nil || sum.Count(Landed) != 1 {
+		t.Fatalf("partly-upstream run: %+v %v", sum, err)
+	}
+	if got := fx.subjects(other, sum.Results[0].Landed); strings.Join(got, "|") != "docs: a|docs: b" {
+		t.Fatalf("history: %q", got)
+	}
+}
+
+// TestM2_2_SquashWritesARepeatedTrailerOnce: a source that repeats a trailer
+// is a legitimate change; the squash carries the de-duplicated union.
+func TestM2_2_SquashWritesARepeatedTrailerOnce(t *testing.T) {
+	ctx := context.Background()
+	fx := newFixture(t)
+	signed := "Signed-off-by: Dev <dev@example.com>"
+	fx.author("agent-a", fx.base, map[string]string{"a.txt": "a\n"}, "docs: a\n\nWhy a.\n\n"+signed+"\nReviewed-by: R <r@example.com>\n"+signed+"\n")
+	tr := fx.train(nil)
+	tr.Squash = true
+	sum, err := tr.Run(ctx, false)
+	if err != nil || sum.Count(Landed) != 1 {
+		t.Fatalf("run: %+v %v", sum, err)
+	}
+	if got := fx.trailers(sum.Results[0].Landed); got != signed+"\nReviewed-by: R <r@example.com>" {
+		t.Fatalf("trailers:\n%s", got)
+	}
+	if msg := fx.git("log", "-1", "--format=%B", string(sum.Results[0].Landed)); !strings.HasPrefix(msg, "docs: a\n\nWhy a.\n\n"+signed+"\n") || strings.Count(msg, signed) != 1 {
+		t.Fatalf("message:\n%s", msg)
 	}
 }
 
@@ -1046,12 +1617,52 @@ func TestM2_2_ObjectsTravelThroughTheRemoteAndStagingRefsAreRemoved(t *testing.T
 	if refs := bare.git("for-each-ref", "--format=%(refname)", "refs/chimera"); refs != "" {
 		t.Fatalf("queue or staging refs left on the forge:\n%s", refs)
 	}
+	// A lander killed right after its push leaves the queue ref and the
+	// staging ref behind; the next lander removes both.
+	// The lander that recovers works in another clone, made before the
+	// change existed: it has to fetch the target to know what is in it.
+	second := &repo{t: t, dir: filepath.Join(t.TempDir(), "lander-2")}
+	(&repo{t: t, dir: t.TempDir()}).git("clone", "-q", bare.dir, second.dir)
+	head2 := bare.commit(base, map[string]string{"b.txt": "b\n"}, "docs: b\n")
+	bare.git("update-ref", "refs/heads/agent-b", string(head2))
+	if _, _, _, err := Enqueue(ctx, f, "main", "agent-b"); err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				if _, ok := r.(died); !ok {
+					panic(r)
+				}
+			}
+		}()
+		dying := *tr
+		dying.Forge = hookForge{Forge: f, after: func(ref string, old, new forge.SHA, err error) {
+			if ref == "refs/heads/main" && err == nil {
+				panic(died{})
+			}
+		}}
+		dying.Run(ctx, false)
+	}()
+	if refs := bare.git("for-each-ref", "--format=%(refname)", "refs/chimera"); strings.Count(refs, "\n") != 1 || !strings.Contains(refs, StagingPrefix) {
+		t.Fatalf("refs after the kill:\n%s", refs)
+	}
+	fresh := &Train{Forge: f, Store: tr.Store, Repo: tr.Repo, Target: "main", Holder: "lander-2", Git: &GitWorkspace{Dir: second.dir, Remote: "origin"}, Verify: tr.Verify}
+	if tip := bare.git("rev-parse", "refs/heads/main"); (&GitWorkspace{Dir: second.dir}).has(ctx, forge.SHA(tip)) {
+		t.Fatal("the second clone already has the pushed commit; the test proves nothing")
+	}
+	if sum, err := fresh.Run(ctx, false); err != nil || sum.Count(Landed) != 1 || sum.Results[0].Reason != "already in main" || len(sum.Results[0].Warnings) != 0 {
+		t.Fatalf("recovery: %+v %v", sum, err)
+	}
+	if refs := bare.git("for-each-ref", "--format=%(refname)", "refs/chimera"); refs != "" {
+		t.Fatalf("refs left after recovery:\n%s", refs)
+	}
 	// The lander's own branches did not move, and the forge logged the check.
 	if got := clone.git("rev-parse", "refs/heads/main"); got != string(base) {
 		t.Fatalf("the lander's own main moved to %s", got)
 	}
 	events, err := f.Events(ctx)
-	if err != nil || len(events) != 1 || events[0].Kind != "report" || events[0].SHA != landed || events[0].Check.State != forge.Pass {
+	if err != nil || len(events) != 2 || events[0].Kind != "report" || events[0].SHA != landed || events[0].Check.State != forge.Pass || events[1].Check.State != forge.Pass {
 		t.Fatalf("forge events: %+v %v", events, err)
 	}
 	_ = c

@@ -100,7 +100,7 @@ func TestM2_1_GoldenHTMLForFixtureHistory(t *testing.T) {
 		`<td class="mono">pkg/<wbr>objstore/<wbr>sigv4.go</td>`, `<td>Chimera-Intent, Chimera-Capsule</td>`,
 		`<span class="state">FAIL</span>`, `<span class="state">STALE</span>`, `<span class="state">PENDING</span>`,
 		`<video controls preload="metadata" width="640" height="360" src="media/`,
-		`width="320" height="180" alt="Proof w-1-lint.png from capsule `, `width="720" height="200" alt="Proof capsule-write.svg`,
+		`width="320" height="180" alt="Proof w-1-lint.png from capsule `,
 		`<figcaption><span class="mono">w-2-push.mp4</span> · <span class="mono">[W-2]</span></figcaption>`,
 		`<th scope="col">Commit</th><th scope="col">Subject</th><th scope="col">Capsule</th><th scope="col">Intent</th>`,
 	} {
@@ -119,6 +119,10 @@ func TestM2_1_GoldenHTMLForFixtureHistory(t *testing.T) {
 	}
 	if strings.Count(html, "<h1>") != 1 || strings.Count(html, "<h2 ") != 6 || strings.Count(html, "<details id=") != 3 {
 		t.Error("headings or drill-downs")
+	}
+	// A Capsule's SVG is a document that can carry script: it is not rendered.
+	if strings.Contains(html, "capsule-write.svg") {
+		t.Error("a capsule SVG is on the page")
 	}
 	// One click: every fragment link lands on an element of the page, and
 	// every verdict and risk row links to a transcript line or a capsule.
@@ -363,7 +367,8 @@ func TestM2_1_FailingRing0VerdictIsR3(t *testing.T) {
 	intent := f.FolioIntent("HEAD")
 	addr := f.Capsule(trailtest.CapsuleSpec{Intent: intent, BaseSHA: f.Base,
 		Transcript: []lane.Event{trailtest.VerdictEvent("ring0", "lane leaves Ring-0 paths unchanged", false)},
-		Verdicts:   []capsule.Verdict{{ID: "ring0", Criterion: "lane leaves Ring-0 paths unchanged", Pass: false, Evidence: "changed: verify/check.sh"}}})
+		Verdicts:   []capsule.Verdict{{ID: "ring0", Criterion: "lane leaves Ring-0 paths unchanged", Pass: false, Evidence: "changed: verify/check.sh"}},
+		Paths:      []string{"a.txt"}})
 	f.Commit("a: small change", map[string]string{"a.txt": "1\n"}, trailtest.Trailers(intent, addr)...)
 	r := build(t, f, f.Base, "HEAD")
 	if r.Risk != "R3" || r.Check.State != StateFail {
@@ -427,7 +432,8 @@ func TestM2_1_SpecDriftFindsUnmetIntentAndOrphanProof(t *testing.T) {
 	f := ref.Fixture
 	base := f.Head()
 	fix := f.Capsule(trailtest.CapsuleSpec{Intent: ref.Intent, BaseSHA: base,
-		Verdicts: []capsule.Verdict{{ID: "[W-2]", Criterion: "Corrupted member makes get fail", Pass: true}, {ID: "[W-3]", Criterion: "Query ranks by tier", Pass: true}}})
+		Verdicts: []capsule.Verdict{{ID: "[W-2]", Criterion: "Corrupted member makes get fail", Pass: true}, {ID: "[W-3]", Criterion: "Query ranks by tier", Pass: true}},
+		Paths:    []string{"pkg/objstore/get.go"}})
 	f.Commit("capsule: fail get on a corrupted member", map[string]string{"pkg/objstore/get.go": "package objstore\n"}, trailtest.Trailers(ref.Intent, fix)...)
 	fixed := build(t, f, ref.Base, "HEAD")
 	if len(fixed.Unmet) != 0 {
@@ -449,8 +455,9 @@ func TestM2_1_SpecDriftFindsUnmetIntentAndOrphanProof(t *testing.T) {
 		t.Errorf("counts %d %d %d %d", pass, fail, stale, sup)
 	}
 	page, _ := RenderHTML(fixed)
-	if !strings.Contains(string(page), `<span class="muted">superseded by `+fix[7:19]+`</span>`) {
-		t.Error("page does not mark the superseded verdict")
+	// The superseded failure is still a FAIL row: accent rule and all (DESIGN.md §2.5).
+	if !strings.Contains(string(page), `<tr class="fail"><td class="mono">[W-2]</td><td>Corrupted member makes get fail <span class="muted">superseded by `+fix[7:19]+`</span></td><td><span class="state">FAIL</span>`) {
+		t.Error("page does not mark the superseded verdict as a superseded FAIL row")
 	}
 
 	// A task Intent's acceptance IDs come from its manifest in the store.
@@ -462,7 +469,8 @@ func TestM2_1_SpecDriftFindsUnmetIntentAndOrphanProof(t *testing.T) {
 	}
 	tb := f.Head()
 	tc := f.Capsule(trailtest.CapsuleSpec{Intent: task, BaseSHA: tb,
-		Verdicts: []capsule.Verdict{{ID: "[NIT-1]", Criterion: "focus ring is 2px accent", Pass: true}, {ID: "[W-1]", Criterion: "a folio id under a task intent", Pass: true}}})
+		Verdicts: []capsule.Verdict{{ID: "[NIT-1]", Criterion: "focus ring is 2px accent", Pass: true}, {ID: "[W-1]", Criterion: "a folio id under a task intent", Pass: true}},
+		Paths:    []string{"ui.css"}})
 	f.Commit("ui: restore the focus ring", map[string]string{"ui.css": "a:focus{}\n"}, trailtest.Trailers(task, tc)...)
 	tr := build(t, f, tb, "HEAD")
 	if len(tr.Unmet) != 1 || tr.Unmet[0].ID != "[NIT-2]" || tr.Unmet[0].State != StatePending || len(tr.Orphans) != 1 || tr.Orphans[0].ID != "[W-1]" {
@@ -478,7 +486,7 @@ func TestM2_1_SpecDriftFindsUnmetIntentAndOrphanProof(t *testing.T) {
 func TestM2_1_StaleFolioIntentIsOpenRisk(t *testing.T) {
 	f := trailtest.New(t, trailtest.BaseFiles())
 	old := f.FolioIntent("HEAD")
-	addr := f.Capsule(trailtest.CapsuleSpec{Intent: old, BaseSHA: f.Base, Verdicts: []capsule.Verdict{{ID: "[W-1]", Criterion: "c", Pass: true}}})
+	addr := f.Capsule(trailtest.CapsuleSpec{Intent: old, BaseSHA: f.Base, Verdicts: []capsule.Verdict{{ID: "[W-1]", Criterion: "c", Pass: true}}, Paths: []string{"a.txt"}})
 	f.Commit("lint: work against the old folio", map[string]string{"a.txt": "1\n"}, trailtest.Trailers(old, addr)...)
 	f.Commit("folio: add an acceptance id", map[string]string{"PRODUCT.md": trailtest.BaseFiles()["PRODUCT.md"] + "\n**[W-4] Export.** Export is stable.\n"})
 	r := build(t, f, f.Base, "HEAD")
@@ -552,6 +560,19 @@ func TestM2_1_SquashPreservesTheTrailerUnion(t *testing.T) {
 	if len(r.Commits) != 1 || len(r.Commits[0].Capsules) != 3 || len(r.Capsules) != 3 || len(r.Missing) != 0 || len(r.Verdicts) != 6 {
 		t.Fatalf("squashed trail: %d commits, capsules %v, %d missing, %d verdicts", len(r.Commits), r.Commits[0].Capsules, len(r.Missing), len(r.Verdicts))
 	}
+	// The squash swallowed two commits no Capsule covers — the untrailered docs
+	// fix and the notes file. Trailers cannot launder them: the files they
+	// changed are in no cited Capsule's diff, and the row says so.
+	var uncovered []RiskItem
+	for _, it := range r.OpenRisk {
+		if it.Kind == "uncovered" {
+			uncovered = append(uncovered, it)
+		}
+	}
+	if len(uncovered) != 1 || uncovered[0].Reason != "2 paths not in any cited capsule's diff: NOTES.md, README.md" ||
+		uncovered[0].Source != (Source{Capsule: ref.LintCapsule, Commit: squashed}) {
+		t.Fatalf("uncovered rows: %+v", uncovered)
+	}
 	page, _ := RenderHTML(r)
 	for _, a := range []string{ref.LintCapsule, ref.PushCapsule, ref.VerifyCapsule} {
 		if !strings.Contains(string(page), `<a href="#cap-`+a[7:19]+`">`+a[7:19]+`</a>`) {
@@ -609,9 +630,8 @@ func TestM2_1_BundleShipsLockedAssetsAndCapsuleMediaByteExact(t *testing.T) {
 		kind string
 		id   string
 	}{
-		"media/" + lint12 + "-capsule-write.svg": {trailtest.ReferenceSVG(t), 720, 200, "image", "[W-1]"},
-		"media/" + lint12 + "-w-1-lint.png":      {trailtest.PNG(), 320, 180, "image", "[W-1]"},
-		"media/" + push12 + "-w-2-push.mp4":      {trailtest.MP4(640, 360), 640, 360, "video", "[W-2]"},
+		"media/" + lint12 + "-w-1-lint.png": {trailtest.PNG(), 320, 180, "image", "[W-1]"},
+		"media/" + push12 + "-w-2-push.mp4": {trailtest.MP4(640, 360), 640, 360, "video", "[W-2]"},
 	}
 	if len(rep.Media) != len(want) {
 		t.Fatalf("media: %+v", rep.Media)
@@ -628,9 +648,9 @@ func TestM2_1_BundleShipsLockedAssetsAndCapsuleMediaByteExact(t *testing.T) {
 			t.Errorf("%s: %dx%d %s %s", m.File, m.Width, m.Height, m.Kind, m.ID)
 		}
 	}
-	// The capsule copy of the reference diagram equals the Folio's own.
-	if !bytes.Equal(read("media/"+lint12+"-capsule-write.svg"), read("media/capsule-write.svg")) {
-		t.Error("capsule media and the locked reference media differ")
+	// The Capsule's SVG stays in the Capsule; the Folio's own reference SVG ships.
+	if _, err := os.Stat(filepath.Join(out, "media", lint12+"-capsule-write.svg")); err == nil {
+		t.Error("a capsule SVG was copied into the bundle")
 	}
 	// Exactly these files: no script, nothing else.
 	var names []string
@@ -641,7 +661,7 @@ func TestM2_1_BundleShipsLockedAssetsAndCapsuleMediaByteExact(t *testing.T) {
 		}
 		return nil
 	})
-	if len(names) != 2+len(lane.LockedAssets())+3 {
+	if len(names) != 2+len(lane.LockedAssets())+2 {
 		t.Errorf("bundle files: %v", names)
 	}
 	for _, n := range names {
@@ -652,6 +672,28 @@ func TestM2_1_BundleShipsLockedAssetsAndCapsuleMediaByteExact(t *testing.T) {
 	golden, _ := os.ReadFile(filepath.Join("testdata", "golden", "index.html"))
 	if !bytes.Equal(read("index.html"), golden) {
 		t.Error("bundle index.html differs from the golden page")
+	}
+	// Writing over an older page removes the older page's proof files from
+	// media/ — and nothing else.
+	stale := filepath.Join(out, "media", "000000000000-old-proof.png")
+	keep := filepath.Join(out, "notes.txt")
+	os.WriteFile(stale, []byte("old"), 0o644)
+	os.WriteFile(keep, []byte("mine"), 0o644)
+	os.MkdirAll(filepath.Join(out, "media", "dir"), 0o755)
+	if err := WriteBundle(out, rep); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); err == nil {
+		t.Error("stale media survived a rewrite")
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Error("a file outside media/ was removed")
+	}
+	if _, err := os.Stat(filepath.Join(out, "media", "dir")); err != nil {
+		t.Error("a directory inside media/ was removed")
+	}
+	if !bytes.Equal(read("media/capsule-write.svg"), trailtest.ReferenceSVG(t)) {
+		t.Error("the locked reference media did not survive a rewrite")
 	}
 	// A report that lost its media bytes (decoded from JSON) cannot fake a bundle.
 	raw, _ := json.Marshal(rep)
@@ -709,7 +751,8 @@ func TestM2_1_LongTranscriptKeepsLinkTargetsAndElidesTheRest(t *testing.T) {
 	}
 	events[9] = trailtest.Output("edit pkg/objstore/sigv4.go")
 	addr := f.Capsule(trailtest.CapsuleSpec{Intent: intent, BaseSHA: f.Base, Transcript: events,
-		Verdicts: []capsule.Verdict{{ID: "[W-1]", Criterion: "c", Pass: true, Evidence: "transcript:500"}, {ID: "[W-2]", Criterion: "d", Pass: true, Evidence: "transcript:5000"}}})
+		Verdicts: []capsule.Verdict{{ID: "[W-1]", Criterion: "c", Pass: true, Evidence: "transcript:500"}, {ID: "[W-2]", Criterion: "d", Pass: true, Evidence: "transcript:5000"}},
+		Paths:    []string{"pkg/objstore/sigv4.go"}})
 	f.Commit("objstore: change signing", map[string]string{"pkg/objstore/sigv4.go": "package objstore\n"}, trailtest.Trailers(intent, addr)...)
 	r := build(t, f, f.Base, "HEAD")
 	c := r.Capsules[0]
@@ -754,11 +797,9 @@ func TestM2_1_MediaDimensionsComeFromTheFileHeader(t *testing.T) {
 		w, h int
 	}{
 		{".png", trailtest.PNG(), 320, 180}, {".gif", gif, 320, 180}, {".jpg", jpeg, 320, 180}, {".jpeg", jpeg, 320, 180}, {".webp", webp, 320, 180},
-		{".svg", []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360"><rect/></svg>`), 640, 360},
-		{".svg", []byte(`<svg width="48px" height='24' viewBox="0 0 1 1"/>`), 48, 24},
 		{".mp4", trailtest.MP4(1440, 900), 1440, 900}, {".webm", webm, 854, 480},
 		// Unreadable headers fall back to 16:9 rather than omit the attributes.
-		{".png", []byte("not a png"), 1280, 720}, {".mp4", []byte{0, 0, 0, 1}, 1280, 720}, {".webm", []byte{0xff, 0xff}, 1280, 720}, {".svg", []byte("<svg>"), 1280, 720},
+		{".png", []byte("not a png"), 1280, 720}, {".mp4", []byte{0, 0, 0, 1}, 1280, 720}, {".webm", []byte{0xff, 0xff}, 1280, 720},
 	} {
 		if w, h := dimensions(tc.ext, tc.data); w != tc.w || h != tc.h {
 			t.Errorf("%s: %dx%d, want %dx%d", tc.ext, w, h, tc.w, tc.h)

@@ -111,13 +111,20 @@ func Branch(ref string) string { return strings.TrimPrefix(ref, "refs/heads/") }
 
 const seqDigits = 8
 
+// TargetSegment encodes a target as exactly one path segment ("%" → "%25",
+// "/" → "%2F"), so the queue of "main" can never be read as the queue of
+// "main/00000001" or the other way round.
+func TargetSegment(target string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(Branch(target), "%", "%25"), "/", "%2F")
+}
+
 // QueueRef names the queue ref of a change.
 func QueueRef(target string, seq int, branch string) string {
-	return fmt.Sprintf("%s%s/%0*d/%s", QueuePrefix, Branch(target), seqDigits, seq, Branch(branch))
+	return fmt.Sprintf("%s%0*d/%s", QueueRefPrefix(target), seqDigits, seq, Branch(branch))
 }
 
 // QueueRefPrefix is the prefix every queue ref of target starts with.
-func QueueRefPrefix(target string) string { return QueuePrefix + Branch(target) + "/" }
+func QueueRefPrefix(target string) string { return QueuePrefix + TargetSegment(target) + "/" }
 
 // ChangeFromRef decodes a queue ref of target; ok is false for any other ref.
 func ChangeFromRef(target, ref string, head SHA) (c Change, ok bool) {

@@ -16,7 +16,10 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"math/rand"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -137,22 +140,40 @@ func ParseJWKS(raw []byte) (*KeySet, error) {
 	return set, nil
 }
 
-// RemoteKeys fetches a JWKS over HTTP and caches it. An unknown kid triggers
-// a re-fetch at most once per minute, so a stream of forged tokens cannot
-// turn the inlet into a client of the identity provider.
+// RemoteKeys is a JWKS fetched over HTTPS and kept in memory. It is loaded
+// once, before the inlet serves anything, and refreshed by a background
+// ticker. Verifying a token only ever reads the cached set: no request,
+// whatever "kid" it claims, can make the inlet call the identity provider
+// (PRODUCT.md §2.6: unauthenticated input triggers no compute beyond the
+// append).
 type RemoteKeys struct {
-	URL    string
-	Client *http.Client     // nil means a client with a 10s timeout
-	Now    func() time.Time // nil means time.Now
+	URL     string
+	Client  *http.Client     // nil means http.DefaultTransport with a 10s timeout
+	Now     func() time.Time // nil means time.Now
+	Refresh time.Duration    // 0 means DefaultJWKSRefresh
+	MaxAge  time.Duration    // 0 means DefaultJWKSMaxAge
+	Log     func(format string, args ...any)
 
-	mu      sync.Mutex
-	set     *KeySet
-	fetched time.Time
+	mu     sync.RWMutex
+	set    *KeySet
+	loaded time.Time
+
+	startOnce, stopOnce sync.Once
+	stop                chan struct{}
+	done                chan struct{}
 }
 
-const jwksRefetch = time.Minute
-
-var jwksClient = &http.Client{Timeout: 10 * time.Second}
+// JWKS refresh policy.
+const (
+	DefaultJWKSRefresh = 5 * time.Minute
+	// DefaultJWKSMaxAge is how long a set is trusted without one successful
+	// refresh. Beyond it the set is dropped and nobody is an owner until the
+	// identity provider answers again: a key it has withdrawn is not trusted
+	// forever because the refresh keeps failing.
+	DefaultJWKSMaxAge = 24 * time.Hour
+	jwksTimeout       = 10 * time.Second
+	maxJWKSBytes      = 1 << 20
+)
 
 func (r *RemoteKeys) now() time.Time {
 	if r.Now != nil {
@@ -161,12 +182,48 @@ func (r *RemoteKeys) now() time.Time {
 	return time.Now()
 }
 
-func (r *RemoteKeys) fetch(ctx context.Context) error {
-	client := r.Client
-	if client == nil {
-		client = jwksClient
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.URL, nil)
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// jwksURL refuses a JWKS location that could be read or rewritten in
+// transit: https only, except on loopback.
+func jwksURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || u.User != nil {
+		return nil, fmt.Errorf("jwks: invalid url")
+	}
+	if u.Scheme != "https" && !(u.Scheme == "http" && loopbackHost(u.Hostname())) {
+		return nil, fmt.Errorf("jwks: url must be https")
+	}
+	return u, nil
+}
+
+// Load fetches the JWKS once and replaces the cached set on success. It
+// never holds the lock across the network.
+func (r *RemoteKeys) Load(ctx context.Context) error {
+	u, err := jwksURL(r.URL)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{}
+	if r.Client != nil {
+		*client = *r.Client
+	}
+	// A redirect may not leave the host the operator configured.
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 3 || req.URL.Host != u.Host || req.URL.Scheme != u.Scheme {
+			return fmt.Errorf("redirect refused")
+		}
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, jwksTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return fmt.Errorf("jwks: invalid url")
 	}
@@ -179,45 +236,90 @@ func (r *RemoteKeys) fetch(ctx context.Context) error {
 	if res.StatusCode != http.StatusOK {
 		return fmt.Errorf("jwks: status %d", res.StatusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	raw, err := io.ReadAll(io.LimitReader(res.Body, maxJWKSBytes+1))
 	if err != nil {
 		return fmt.Errorf("jwks: unreadable")
+	}
+	if len(raw) > maxJWKSBytes {
+		return fmt.Errorf("jwks: larger than %d bytes", maxJWKSBytes)
 	}
 	set, err := ParseJWKS(raw)
 	if err != nil {
 		return err
 	}
-	r.set = set
+	r.mu.Lock()
+	r.set, r.loaded = set, r.now()
+	r.mu.Unlock()
 	return nil
 }
 
-// Key implements KeySource.
-func (r *RemoteKeys) Key(ctx context.Context, kid string) ([]jwk, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.set != nil {
-		if keys, err := r.set.Key(ctx, kid); err == nil {
-			return keys, nil
+// Start refreshes the set in the background until Close. A failed refresh
+// keeps the set it has; Key stops trusting a set older than MaxAge.
+func (r *RemoteKeys) Start() {
+	r.startOnce.Do(func() {
+		r.stop, r.done = make(chan struct{}), make(chan struct{})
+		every := r.Refresh
+		if every <= 0 {
+			every = DefaultJWKSRefresh
 		}
+		go func() {
+			defer close(r.done)
+			for {
+				// Jitter of ±10% keeps a fleet from refreshing in step.
+				wait := every - every/10 + time.Duration(rand.Int63n(int64(every/5)+1))
+				timer := time.NewTimer(wait)
+				select {
+				case <-r.stop:
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+				// Detached from every request: nobody's disconnect can cancel it.
+				if err := r.Load(context.Background()); err != nil && r.Log != nil {
+					r.Log("inlet: jwks refresh failed: %v", err)
+				}
+			}
+		}()
+	})
+}
+
+// Close stops the background refresh.
+func (r *RemoteKeys) Close() {
+	r.stopOnce.Do(func() {
+		if r.stop != nil {
+			close(r.stop)
+			<-r.done
+		}
+	})
+}
+
+// Key implements KeySource from the cached set alone.
+func (r *RemoteKeys) Key(ctx context.Context, kid string) ([]jwk, error) {
+	maxAge := r.MaxAge
+	if maxAge <= 0 {
+		maxAge = DefaultJWKSMaxAge
 	}
-	now := r.now()
-	if !r.fetched.IsZero() && now.Sub(r.fetched) < jwksRefetch {
+	r.mu.RLock()
+	set, loaded := r.set, r.loaded
+	r.mu.RUnlock()
+	if set == nil || r.now().Sub(loaded) > maxAge {
 		return nil, ErrToken
 	}
-	r.fetched = now
-	if err := r.fetch(ctx); err != nil {
-		return nil, ErrToken
-	}
-	return r.set.Key(ctx, kid)
+	return set.Key(ctx, kid)
 }
 
 // Verifier checks an edge-issued JWT/OIDC token (PRODUCT.md §2.6): compact
 // JWS signed with RS256, ES256, or EdDSA by a key of the configured issuer.
 type Verifier struct {
 	Issuer   string // required "iss"
-	Audience string // required member of "aud"; empty skips the check
+	Audience string // required member of "aud"; a verifier without one accepts nothing
 	Keys     KeySource
-	Now      func() time.Time // nil means time.Now
+	// EmailVerifiedIfPresent accepts a token without an email_verified claim
+	// (edges that assert the email by issuance carry none). The default is to
+	// require email_verified: true. A claim that is present and not true
+	// always refuses.
+	EmailVerifiedIfPresent bool
+	Now                    func() time.Time // nil means time.Now
 }
 
 // leeway tolerates clock skew on nbf and iat.
@@ -245,7 +347,7 @@ func (a *audience) UnmarshalJSON(b []byte) error {
 // Verify returns the identity a token proves, or ErrToken. The order is
 // fixed: algorithm allow-list, key, signature, and only then the claims.
 func (v *Verifier) Verify(ctx context.Context, token string) (Identity, error) {
-	if v.Issuer == "" || v.Keys == nil || len(token) > maxToken {
+	if v.Issuer == "" || v.Audience == "" || v.Keys == nil || len(token) > maxToken {
 		return Identity{}, ErrToken
 	}
 	parts := strings.Split(token, ".")
@@ -304,7 +406,7 @@ func (v *Verifier) Verify(ctx context.Context, token string) (Identity, error) {
 		Iat           *float64 `json:"iat"`
 		Sub           string   `json:"sub"`
 		Email         string   `json:"email"`
-		EmailVerified *bool    `json:"email_verified"`
+		EmailVerified any      `json:"email_verified"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(rawClaims))
 	if dec.Decode(&claims) != nil {
@@ -315,18 +417,41 @@ func (v *Verifier) Verify(ctx context.Context, token string) (Identity, error) {
 		now = v.Now()
 	}
 	unix := func(f float64) time.Time { return time.Unix(int64(f), 0) }
+	email, emailOK := asciiEmail(claims.Email)
+	verified := claims.EmailVerified == true || (claims.EmailVerified == nil && v.EmailVerifiedIfPresent)
 	switch {
 	case claims.Iss != v.Issuer:
-	case v.Audience != "" && !contains(claims.Aud, v.Audience):
+	case !contains(claims.Aud, v.Audience):
 	case claims.Exp == nil || !now.Before(unix(*claims.Exp)):
 	case claims.Nbf != nil && now.Add(leeway).Before(unix(*claims.Nbf)):
 	case claims.Iat != nil && now.Add(leeway).Before(unix(*claims.Iat)):
-	case strings.TrimSpace(claims.Email) == "" || !strings.Contains(claims.Email, "@"):
-	case claims.EmailVerified != nil && !*claims.EmailVerified:
+	case !emailOK:
+	case !verified:
 	default:
-		return Identity{Email: strings.ToLower(strings.TrimSpace(claims.Email)), Subject: claims.Sub}, nil
+		return Identity{Email: email, Subject: claims.Sub}, nil
 	}
 	return Identity{}, ErrToken
+}
+
+// asciiEmail returns the email lower-cased, or false. Only printable ASCII
+// without spaces is an email here, and only ASCII letters are folded: Unicode
+// case folding maps look-alikes (the Kelvin sign, a dotted capital I) onto
+// plain letters, and an owner list must never be matched by a look-alike.
+// Nothing is trimmed: a claim is taken as the issuer wrote it.
+func asciiEmail(s string) (string, bool) {
+	if s == "" || len(s) > 254 || strings.Count(s, "@") != 1 || strings.HasPrefix(s, "@") || strings.HasSuffix(s, "@") {
+		return "", false
+	}
+	b := []byte(s)
+	for i, c := range b {
+		switch {
+		case c <= ' ' || c >= 0x7f:
+			return "", false
+		case c >= 'A' && c <= 'Z':
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b), true
 }
 
 // verifySignature checks sig over signed. The key's type must be the one the

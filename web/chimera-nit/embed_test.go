@@ -43,10 +43,14 @@ func TestM2_3_ElementCapturesFourThingsAndHoldsNoCredentials(t *testing.T) {
 	src := string(Source)
 	for _, want := range []string{
 		`customElements.define(TAG, ChimeraNit)`, `const TAG = "chimera-nit"`, `customElements.get(TAG)`,
-		`schema: "chimera.nit/v1"`, `url: location.href`, `selector: this.selector`,
+		`schema: "chimera.nit/v1"`, `url: location.origin + location.pathname`, `selector: this.selector`,
 		`viewport: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio || 1 }`, `text,`,
 		`method: "POST"`, `credentials: "include"`, `"Content-Type": "application/json"`, `"/v1/inlet/nit"`,
 		`adoptedStyleSheets`, `attachShadow`, `aria-live`, `"chimera-nit:sent"`, `"chimera-nit:error"`,
+		// The word shown is the inlet's verdict, not merely "the request went out".
+		`body.status === "task"`, `"SENT"`, `body.status === "folio"`, `"QUEUED"`, `body.status === "triage"`, `"RECEIVED"`, `body.status === "dropped" ? "DROPPED"`,
+		// The selector walk is bounded and reads the DOM through prototype getters.
+		`getter(Node.prototype, "parentElement")`, `getter(Element.prototype, "localName")`, `depth < 64`, `> 1024) path.shift()`,
 		`prefers-color-scheme: dark`, `prefers-reduced-motion: reduce`, `outline: 2px solid var(--accent)`,
 		`"IBM Plex Sans", ui-sans-serif`, `"IBM Plex Mono", ui-monospace`,
 		`--paper: #F6F5F2`, `--ink: #16171A`, `--muted: #5B5E66`, `--rule: #D8D5CE`, `--accent: #1F45C8`,
@@ -59,7 +63,7 @@ func TestM2_3_ElementCapturesFourThingsAndHoldsNoCredentials(t *testing.T) {
 	// No credentials, no dependencies, nothing a strict CSP would refuse, no
 	// third-party request, and never the banned typeface.
 	for _, banned := range []string{
-		"localStorage", "sessionStorage", "document.cookie", "Authorization", "eval(", "innerHTML", "outerHTML", "insertAdjacentHTML",
+		"localStorage", "sessionStorage", "document.cookie", "Authorization", "eval(", "innerHTML", "location.href", "location.search", "location.hash", "outerHTML", "insertAdjacentHTML",
 		"http://", "https://", "Inter", "import ", "require(", "<style", "cssText", "box-shadow", "gradient", "XMLHttpRequest",
 	} {
 		if strings.Contains(src, banned) {

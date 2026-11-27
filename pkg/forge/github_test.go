@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -441,5 +443,44 @@ func TestM2_2_GitHubErrorsNameTheCallAndNeverTheToken(t *testing.T) {
 	}
 	if (&GitHub{}).base() != "https://api.github.com" {
 		t.Fatal("default API root")
+	}
+}
+
+// TestM2_2_GitHubNeverSendsTheTokenInTheClear: over plain http the token
+// travels only to a loopback address.
+func TestM2_2_GitHubNeverSendsTheTokenInTheClear(t *testing.T) {
+	ctx := context.Background()
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { atomic.AddInt32(&hits, 1) }))
+	defer srv.Close()
+	client := &http.Client{Transport: &http.Transport{DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String()) // whatever the host, connect here
+	}}}
+	plain := &GitHub{API: "http://forge.example.com", Repo: "acme/widget", Token: "example-token-value", Client: client}
+	for name, call := range map[string]func() error{
+		"head":   func() error { _, err := plain.Head(ctx, "main"); return err },
+		"push":   func() error { return plain.Push(ctx, "main", Zero, "abc") },
+		"queue":  func() error { _, err := plain.Queue(ctx, "main"); return err },
+		"report": func() error { return plain.Report(ctx, "abc", Check{Name: "chimera/land", State: Pass}) },
+		"notify": func() error { return plain.Notify(ctx, Change{Branch: "x", Head: "abc"}, "m") },
+	} {
+		err := call()
+		if err == nil || !strings.Contains(err.Error(), "forge.api must be https") || strings.Contains(err.Error(), plain.Token) || strings.Contains(err.Error(), "forge.example.com") {
+			t.Errorf("%s over plain http: %v", name, err)
+		}
+	}
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Fatalf("%d requests carried the token in the clear", n)
+	}
+	// Loopback is where the test double lives; without a token there is nothing to protect.
+	if !loopback("127.0.0.1") || !loopback("::1") || !loopback("localhost") || loopback("forge.example.com") || loopback("10.0.0.1") {
+		t.Fatal("loopback")
+	}
+	anon := &GitHub{API: "http://forge.example.com", Repo: "acme/widget", Client: client}
+	if _, err := anon.Head(ctx, "main"); err != nil && strings.Contains(err.Error(), "must be https") {
+		t.Fatalf("tokenless request refused: %v", err)
+	}
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Fatal("the tokenless request was not sent")
 	}
 }

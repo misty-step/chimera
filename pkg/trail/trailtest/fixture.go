@@ -127,7 +127,23 @@ type CapsuleSpec struct {
 	Verdicts   []capsule.Verdict
 	Transcript []lane.Event      // Seq and Checkpoint are filled in
 	Proof      map[string][]byte // name under proof/ → bytes
-	NoPush     bool              // pack only: the Capsule never reaches the store
+	// Paths are the files the Capsule's diff.patch changes; a commit citing
+	// the Capsule is covered for exactly these.
+	Paths  []string
+	NoPush bool // pack only: the Capsule never reaches the store
+	// NoVerdicts leaves verdicts.json out of the Capsule altogether.
+	NoVerdicts bool
+	// RawVerdicts, when set, is written as verdicts.json verbatim.
+	RawVerdicts []byte
+}
+
+// Diff renders a git-format diff that touches paths, one line each.
+func Diff(paths ...string) []byte {
+	var b bytes.Buffer
+	for _, p := range paths {
+		fmt.Fprintf(&b, "diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-before\n+after\n", p, p, p, p)
+	}
+	return b.Bytes()
 }
 
 const crockford = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
@@ -158,7 +174,13 @@ func (f *Fixture) Capsule(spec CapsuleSpec) string {
 	members := map[string][]byte{
 		capsule.MemberTranscript: capsule.Zstd(transcript.Bytes()),
 		capsule.MemberVerdicts:   append(vjson, '\n'),
-		capsule.MemberDiff:       []byte{},
+		capsule.MemberDiff:       Diff(spec.Paths...),
+	}
+	if spec.RawVerdicts != nil {
+		members[capsule.MemberVerdicts] = spec.RawVerdicts
+	}
+	if spec.NoVerdicts {
+		delete(members, capsule.MemberVerdicts)
 	}
 	for name, data := range spec.Proof {
 		members["proof/"+name] = data
@@ -323,9 +345,10 @@ func NewReference(t testing.TB) *Reference {
 		},
 		Verdicts: []capsule.Verdict{
 			{ID: "[W-1]", Criterion: "Lint output never contains the matched term", Pass: true, Evidence: "transcript:3"},
-			{ID: "[W-1]", Criterion: "Unreadable denylist fails closed", Pass: true, Evidence: "proof/capsule-write.svg"},
+			{ID: "[W-1]", Criterion: "Unreadable denylist fails closed", Pass: true, Evidence: "see proof/w-1-lint.png"},
 		},
 		Proof: map[string][]byte{"w-1-lint.png": PNG(), "capsule-write.svg": ReferenceSVG(t)},
+		Paths: []string{"pkg/lint/lint.go"},
 	})
 	r.Lint = f.Commit("lint: add tenant-leak scanner", map[string]string{"pkg/lint/lint.go": "package lint\n\nfunc Scan() int { return 0 }\n"},
 		Trailers(r.Intent, r.LintCapsule)...)
@@ -346,6 +369,7 @@ func NewReference(t testing.TB) *Reference {
 			{ID: "[X-9]", Criterion: "Legacy export still works", Pass: true},
 		},
 		Proof: map[string][]byte{"w-2-push.mp4": MP4(640, 360)},
+		Paths: []string{"pkg/objstore/sigv4.go"},
 	})
 	r.Push = f.Commit("capsule: write-once push with readback", map[string]string{
 		"pkg/objstore/sigv4.go": "package objstore\n\n// sign returns the signature version.\nfunc sign() string { return \"v4a\" }\n"},
@@ -362,6 +386,7 @@ func NewReference(t testing.TB) *Reference {
 			{Event: "end"},
 		},
 		Verdicts: []capsule.Verdict{{ID: "verifier", Criterion: "verifier exits 0", Pass: true, Evidence: "transcript:4"}},
+		Paths:    []string{"verify/check.sh"},
 	})
 	r.Verify = f.Commit("verify: run vet before the tests", map[string]string{"verify/check.sh": "#!/bin/sh\ngo vet ./... && go test ./...\n"},
 		Trailers(r.Intent, r.VerifyCapsule)...)

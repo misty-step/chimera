@@ -9,8 +9,9 @@
 //	  verdict  ← verify(rebased) in a Lane   # the tree that will land, not the tree that was authored
 //	  Forge.Push(target, old=base, new=rebased)   # compare-and-swap; stale → retry from rebase
 //
-// The queue lives on the forge as refs (pkg/forge); the epoch fence and the
-// record of what landed or was evicted live in the object store.
+// The queue lives on the forge as refs (pkg/forge); the epoch fence, the push
+// intents, and the record of what landed or was evicted live in the object
+// store.
 package land
 
 import (
@@ -76,9 +77,13 @@ type Rebased struct {
 // from where their objects reach the forge.
 type Workspace interface {
 	// Rebase replays c onto base, as one commit when squash is set. It
-	// returns *ConflictError, *RejectError, or ErrEmpty (with Sources filled)
-	// for a change that cannot or need not land.
+	// returns *ConflictError, *RejectError, or ErrEmpty for a change that
+	// cannot land; an error wrapping forge.ErrUnavailable when the forge's
+	// Git transport did not answer; any other error is the change's own.
 	Rebase(ctx context.Context, c forge.Change, base forge.SHA, squash bool) (Rebased, error)
+	// Contains reports whether sha is tip or an ancestor of it. A commit this
+	// repository has never seen (after fetching tip) is not contained.
+	Contains(ctx context.Context, tip, sha forge.SHA) (bool, error)
 	// Publish makes sha's objects readable by the forge before the
 	// compare-and-swap. It returns the staging ref it created there, or ""
 	// when the forge already reads this repository.
@@ -125,6 +130,14 @@ type Result struct {
 	Landed   forge.SHA    `json:"landed,omitempty"`
 	Capsule  string       `json:"capsule,omitempty"`
 	Attempts int          `json:"attempts"` // rebases performed
+	// Warnings are side effects that failed after the change's fate was
+	// decided: a notification, a check, an outcome record, a dequeue, a
+	// staging ref. They never change State; they must not go unseen.
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+func (r *Result) warn(format string, a ...any) {
+	r.Warnings = append(r.Warnings, fmt.Sprintf(format, a...))
 }
 
 // Summary is one run of a lander.
@@ -162,14 +175,28 @@ type Outcome struct {
 	At      string       `json:"at"`
 }
 
+// Attempt is the write-once push intent a lander stores before the target
+// compare-and-swap: land/<repo>/attempt/<target>/<seq>-<head12>/<rebased12>.json.
+// It is how a later run tells "this change's rebased commit is in the target"
+// (a lander pushed and died, or a push answered with an error yet applied)
+// from "nothing of this change is left to apply": only the first is a landing.
+type Attempt struct {
+	Change  forge.Change `json:"change"`
+	Base    forge.SHA    `json:"base"`
+	Rebased forge.SHA    `json:"rebased"`
+	Capsule string       `json:"capsule,omitempty"`
+	Epoch   int          `json:"epoch"`
+	At      string       `json:"at"`
+}
+
 func epochPrefix(repo string) string { return "land/" + repo + "/epoch-" }
 
 func outcomePrefix(repo, target string) string {
-	return "land/" + repo + "/outcome/" + forge.Branch(target) + "/"
+	return "land/" + repo + "/outcome/" + forge.TargetSegment(target) + "/"
 }
 
-func outcomeKey(repo string, c forge.Change) string {
-	return fmt.Sprintf("%s%08d-%s.json", outcomePrefix(repo, c.Target), c.Seq, c.Head.Short())
+func attemptPrefix(repo string, c forge.Change) string {
+	return fmt.Sprintf("land/%s/attempt/%s/%08d-%s/", repo, forge.TargetSegment(c.Target), c.Seq, c.Head.Short())
 }
 
 func (t *Train) now() time.Time {
@@ -298,6 +325,51 @@ func (t *Train) Run(ctx context.Context, once bool) (Summary, error) {
 	}
 }
 
+// unavailable reports a failure of the store or the forge to answer: the
+// one kind of failure that is nobody's fault and stops the run with the
+// change still queued.
+func unavailable(err error) bool {
+	return errors.Is(err, objstore.ErrUnavailable) || errors.Is(err, forge.ErrUnavailable)
+}
+
+func firstLine(err error) string {
+	msg := strings.TrimSpace(err.Error())
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		msg = msg[:i]
+	}
+	if r := []rune(msg); len(r) > 300 {
+		msg = string(r[:299]) + "…"
+	}
+	return msg
+}
+
+// landedAttempt looks for a push intent of c whose rebased commit is in the
+// target: proof that the change has landed, whoever pushed it.
+func (t *Train) landedAttempt(ctx context.Context, c forge.Change, head forge.SHA) (Attempt, bool, error) {
+	keys, err := t.Store.List(ctx, attemptPrefix(t.Repo, c))
+	if err != nil {
+		return Attempt{}, false, err
+	}
+	for _, k := range keys {
+		raw, err := t.Store.Get(ctx, k)
+		if err != nil {
+			return Attempt{}, false, err
+		}
+		var a Attempt
+		if json.Unmarshal(raw, &a) != nil || a.Rebased.IsZero() || a.Change.Ref != c.Ref || a.Change.Head != c.Head {
+			continue
+		}
+		in, err := t.Git.Contains(ctx, head, a.Rebased)
+		if err != nil {
+			return Attempt{}, false, err
+		}
+		if in {
+			return a, true, nil
+		}
+	}
+	return Attempt{}, false, nil
+}
+
 // land takes one change through the loop.
 func (t *Train) land(ctx context.Context, c forge.Change) (Result, error) {
 	res := Result{Change: c}
@@ -305,30 +377,47 @@ func (t *Train) land(ctx context.Context, c forge.Change) (Result, error) {
 	if maxStale <= 0 {
 		maxStale = DefaultMaxStale
 	}
+	target := forge.Branch(t.Target)
 	for res.Attempts < maxStale {
 		base, err := t.Forge.Head(ctx, t.Target)
 		if err != nil {
-			return Result{}, fmt.Errorf("target %s: %w", forge.Branch(t.Target), err)
+			return Result{}, fmt.Errorf("target %s: %w", target, err)
 		}
 		res.Base = base
+		// A lander that pushed this change and died before dequeuing it — or a
+		// push that answered with an error and applied anyway — left its push
+		// intent behind. If that commit is in the target, the change landed.
+		if a, ok, err := t.landedAttempt(ctx, c, base); err != nil {
+			return Result{}, fmt.Errorf("push intents of %s: %w", c.Branch, err)
+		} else if ok {
+			res.Base, res.Landed, res.Capsule = a.Base, a.Rebased, a.Capsule
+			// The lander that pushed it may not have lived to remove its staging ref.
+			staging := StagingPrefix + a.Rebased.Short()
+			if derr := t.Forge.Push(context.WithoutCancel(ctx), staging, a.Rebased, forge.Zero); derr != nil && !errors.Is(derr, forge.ErrStale) {
+				res.warn("staging ref %s not removed: %v", staging, derr)
+			}
+			return t.landed(ctx, res, "already in "+target)
+		}
 		res.Attempts++
 		rb, err := t.Git.Rebase(ctx, c, base, t.Squash)
 		var conflict *ConflictError
 		var reject *RejectError
 		switch {
 		case errors.As(err, &conflict):
-			return t.evict(ctx, res, fmt.Sprintf("conflict rebasing onto %s %s: %s", forge.Branch(t.Target), base.Short(), strings.Join(conflict.Paths, ", ")))
+			return t.evict(ctx, res, fmt.Sprintf("conflict rebasing onto %s %s: %s", target, base.Short(), strings.Join(conflict.Paths, ", ")))
 		case errors.As(err, &reject):
 			return t.evict(ctx, res, reject.Reason)
-		case errors.Is(err, ErrEmpty) && len(rb.Sources) > 0:
-			// Every commit is already in the target: a lander pushed it and
-			// died before it could dequeue. That is a landing, not an eviction.
-			res.Landed = base
-			return t.landed(ctx, res, "already in "+forge.Branch(t.Target))
 		case errors.Is(err, ErrEmpty):
-			return t.evict(ctx, res, "nothing to land: the branch has no commits beyond "+forge.Branch(t.Target))
-		case err != nil:
+			// With no push intent in the target this is never a landing, and no
+			// check is ever reported for a commit this train did not verify.
+			return t.evict(ctx, res, fmt.Sprintf("nothing to land relative to %s %s", target, base.Short()))
+		case err != nil && ctx.Err() != nil:
+			return Result{}, ctx.Err()
+		case err != nil && unavailable(err):
 			return Result{}, fmt.Errorf("rebase %s: %w", c.Branch, err)
+		case err != nil:
+			// A change that cannot be rebased must not hold up the ones behind it.
+			return t.evict(ctx, res, fmt.Sprintf("could not be rebased onto %s: %s", target, firstLine(err)))
 		}
 		if t.Ring0 != nil {
 			var touched []string
@@ -355,92 +444,121 @@ func (t *Train) land(ctx context.Context, c forge.Change) (Result, error) {
 			if reason == "" {
 				reason = "verification failed"
 			}
-			return t.evict(ctx, res, fmt.Sprintf("%s on the tree rebased onto %s %s", reason, forge.Branch(t.Target), base.Short()))
+			return t.evict(ctx, res, fmt.Sprintf("%s on the tree rebased onto %s %s", reason, target, base.Short()))
 		}
 		// Only the holder of the highest epoch may push.
 		if err := t.fenced(ctx); err != nil {
 			return Result{}, err
 		}
+		// The push intent is stored before the push, so no outcome of the push
+		// — not even one this lander never learns — can strand the change.
+		intent, _ := json.Marshal(Attempt{Change: c, Base: base, Rebased: rb.SHA, Capsule: v.Capsule, Epoch: t.epoch, At: t.now().UTC().Format(time.RFC3339)})
+		if _, err := t.Store.Put(ctx, attemptPrefix(t.Repo, c)+rb.SHA.Short()+".json", intent); err != nil {
+			return Result{}, fmt.Errorf("push intent of %s: %w", c.Branch, err)
+		}
 		staging, err := t.Git.Publish(ctx, rb.SHA)
 		if err != nil {
+			if ctx.Err() != nil {
+				return Result{}, ctx.Err()
+			}
 			return Result{}, fmt.Errorf("publish %s: %w", rb.SHA.Short(), err)
 		}
 		// The forge's compare-and-swap is the final fence.
 		err = t.Forge.Push(ctx, t.Target, base, rb.SHA)
 		if staging != "" {
 			if derr := t.Forge.Push(context.WithoutCancel(ctx), staging, rb.SHA, forge.Zero); derr != nil && !errors.Is(derr, forge.ErrStale) {
+				res.warn("staging ref %s not removed: %v", staging, derr)
 				t.logf("staging ref %s not removed: %v", staging, derr)
 			}
 		}
 		if errors.Is(err, forge.ErrStale) {
-			t.logf("stale: %s moved off %s; rebasing %s again", forge.Branch(t.Target), base.Short(), c.Branch)
+			t.logf("stale: %s moved off %s; rebasing %s again", target, base.Short(), c.Branch)
 			continue
 		}
 		if err != nil {
-			return Result{}, fmt.Errorf("push %s: %w", forge.Branch(t.Target), err)
+			// The push may have applied all the same; the next run reads the
+			// push intent and finds out.
+			return Result{}, fmt.Errorf("push %s: %w", target, err)
 		}
 		res.Landed = rb.SHA
 		return t.landed(ctx, res, "")
 	}
 	res.State = Pending
-	res.Reason = fmt.Sprintf("%s moved %d times while this change was being verified; still queued", forge.Branch(t.Target), res.Attempts)
+	res.Reason = fmt.Sprintf("%s moved %d times while this change was being verified; still queued", target, res.Attempts)
 	return res, nil
 }
 
 // landed finishes a change that is in the target: dequeue, report, record.
-// The target has already moved, so none of this is undone by a failure; a
-// failure here is logged and the next run converges.
+// The target has already moved, so none of this is undone by a failure. A
+// failed report or record is a warning. A failed dequeue also stops the run:
+// the change would otherwise be picked up again at once, forever.
 func (t *Train) landed(ctx context.Context, res Result, note string) (Result, error) {
 	ctx = context.WithoutCancel(ctx)
 	c := res.Change
 	res.State, res.Reason = Landed, note
-	if err := t.Forge.Push(ctx, c.Ref, c.Head, forge.Zero); err != nil && !errors.Is(err, forge.ErrStale) {
-		t.logf("dequeue %s: %v", c.Branch, err)
+	derr := t.Forge.Push(ctx, c.Ref, c.Head, forge.Zero)
+	if errors.Is(derr, forge.ErrStale) {
+		derr = nil // already gone: another lander finished the same landing
 	}
 	title := fmt.Sprintf("landed on %s at %s", forge.Branch(t.Target), res.Landed.Short())
 	summary := fmt.Sprintf("change %s (%s) rebased onto %s and verified post-rebase.", c.Branch, c.Head.Short(), res.Base.Short())
 	if res.Capsule != "" {
 		summary += " Capsule " + res.Capsule + "."
 	}
-	if note != "" {
-		title = note
-	}
 	if err := t.Forge.Report(ctx, res.Landed, forge.Check{Name: CheckName, State: forge.Pass, Title: title, Summary: summary}); err != nil {
+		res.warn("report %s: %v", res.Landed.Short(), err)
 		t.logf("report %s: %v", res.Landed.Short(), err)
 	}
 	if err := t.record(ctx, res); err != nil {
+		res.warn("outcome %s: %v", c.Branch, err)
 		t.logf("outcome %s: %v", c.Branch, err)
 	}
 	t.logf("landed %s at %s", c.Branch, res.Landed.Short())
+	if derr != nil {
+		res.warn("dequeue %s: %v", c.Branch, derr)
+		return res, fmt.Errorf("dequeue %s after landing: %w", c.Branch, derr)
+	}
 	return res, nil
 }
 
 // evict returns a change to its owning branch with the reason, at once: the
-// queue ref goes, the owner is told, the check fails, the outcome is
-// recorded, and the train moves on.
+// outcome is recorded, the queue ref goes, the owner is told, the check
+// fails, and the train moves on. Once begun it is not interrupted: a
+// cancelled run never leaves a change dequeued but untold.
 func (t *Train) evict(ctx context.Context, res Result, reason string) (Result, error) {
 	c := res.Change
 	if err := t.fenced(ctx); err != nil {
 		return Result{}, err
 	}
+	ctx = context.WithoutCancel(ctx)
 	res.State, res.Reason = Evicted, reason
+	if err := t.record(ctx, res); err != nil {
+		res.warn("outcome %s: %v", c.Branch, err)
+		t.logf("outcome %s: %v", c.Branch, err)
+	}
 	if err := t.Forge.Push(ctx, c.Ref, c.Head, forge.Zero); err != nil && !errors.Is(err, forge.ErrStale) {
 		return Result{}, fmt.Errorf("dequeue %s: %w", c.Branch, err)
 	}
 	msg := fmt.Sprintf("chimera land: %s (%s) was evicted from the queue for %s: %s", c.Branch, c.Head.Short(), forge.Branch(t.Target), reason)
 	if err := t.Forge.Notify(ctx, c, msg); err != nil {
+		res.warn("notify %s: %v", c.Branch, err)
 		t.logf("notify %s: %v", c.Branch, err)
 	}
 	if err := t.Forge.Report(ctx, c.Head, forge.Check{Name: CheckName, State: forge.Fail, Title: "evicted: " + reason, Summary: msg}); err != nil {
+		res.warn("report %s: %v", c.Head.Short(), err)
 		t.logf("report %s: %v", c.Head.Short(), err)
-	}
-	if err := t.record(ctx, res); err != nil {
-		t.logf("outcome %s: %v", c.Branch, err)
 	}
 	t.logf("evicted %s: %s", c.Branch, reason)
 	return res, nil
 }
 
+// maxOutcomesPerEpoch bounds the search for a free outcome key.
+const maxOutcomesPerEpoch = 1000
+
+// record writes the outcome under a key no earlier outcome holds:
+// <seq>-<head12>-e<epoch>.json, then -e<epoch>-2, -3, …. Sequence numbers
+// are reused once a queue drains, so the same commit can be evicted, queued
+// again, and land; every one of those is kept.
 func (t *Train) record(ctx context.Context, res Result) error {
 	out := Outcome{Change: res.Change, State: res.State, Reason: res.Reason, Epoch: t.epoch, Base: res.Base, Landed: res.Landed,
 		Capsule: res.Capsule, At: t.now().UTC().Format(time.RFC3339)}
@@ -448,8 +566,21 @@ func (t *Train) record(ctx context.Context, res Result) error {
 	if err != nil {
 		return err
 	}
-	_, err = t.Store.Put(ctx, outcomeKey(t.Repo, res.Change), raw)
-	return err
+	stem := fmt.Sprintf("%s%08d-%s-e%d", outcomePrefix(t.Repo, res.Change.Target), res.Change.Seq, res.Change.Head.Short(), t.epoch)
+	for n := 1; n <= maxOutcomesPerEpoch; n++ {
+		key := stem + ".json"
+		if n > 1 {
+			key = fmt.Sprintf("%s-%d.json", stem, n)
+		}
+		created, err := t.Store.Put(ctx, key, raw)
+		if err != nil {
+			return err
+		}
+		if created {
+			return nil
+		}
+	}
+	return fmt.Errorf("no free outcome key for %s", res.Change.ID)
 }
 
 // Enqueue pins branch's current commit in target's queue through the forge:
@@ -552,6 +683,11 @@ func Status(ctx context.Context, f forge.Forge, store objstore.Store, repo, targ
 	if err != nil {
 		return rep, err
 	}
+	type keyed struct {
+		Outcome
+		key string
+	}
+	var outcomes []keyed
 	for _, k := range keys {
 		raw, err := store.Get(ctx, k)
 		if err != nil {
@@ -561,14 +697,25 @@ func Status(ctx context.Context, f forge.Forge, store objstore.Store, repo, targ
 		if json.Unmarshal(raw, &o) != nil {
 			return rep, fmt.Errorf("outcome %s: malformed", strings.TrimPrefix(k, outcomePrefix(repo, target)))
 		}
-		rep.Outcomes = append(rep.Outcomes, o)
+		outcomes = append(outcomes, keyed{o, k})
 	}
-	sort.SliceStable(rep.Outcomes, func(i, j int) bool {
-		a, b := rep.Outcomes[i], rep.Outcomes[j]
+	// Newest first: by time, then epoch, then key (a later key of one epoch
+	// was written later).
+	sort.SliceStable(outcomes, func(i, j int) bool {
+		a, b := outcomes[i], outcomes[j]
 		if a.At != b.At {
 			return a.At > b.At
 		}
-		return a.Change.Seq > b.Change.Seq
+		if a.Epoch != b.Epoch {
+			return a.Epoch > b.Epoch
+		}
+		if len(a.key) != len(b.key) {
+			return len(a.key) > len(b.key)
+		}
+		return a.key > b.key
 	})
+	for _, o := range outcomes {
+		rep.Outcomes = append(rep.Outcomes, o.Outcome)
+	}
 	return rep, nil
 }

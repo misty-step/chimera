@@ -523,8 +523,8 @@ func TestM2_3_JWKSKeepsOnlyUsableSignatureKeys(t *testing.T) {
 	now := newClock().Now()
 	// A single-key set verifies a token that names no kid; a multi-key set does not guess.
 	one, _ := ParseJWKS(testJWKSOnly)
-	v := &Verifier{Issuer: testIssuer, Keys: one, Now: func() time.Time { return now }}
-	id, err := v.Verify(context.Background(), mint(t, "EdDSA", "", edKey, claims(now, map[string]any{"aud": nil, "email": " Owner@Example.COM "})))
+	v := &Verifier{Issuer: testIssuer, Audience: testAudience, Keys: one, Now: func() time.Time { return now }}
+	id, err := v.Verify(context.Background(), mint(t, "EdDSA", "", edKey, claims(now, map[string]any{"email": "Owner@Example.COM"})))
 	if err != nil || id.Email != testOwner || id.Subject != "user-1" {
 		t.Fatalf("%+v %v", id, err)
 	}
@@ -547,6 +547,14 @@ func TestM2_3_JWKSKeepsOnlyUsableSignatureKeys(t *testing.T) {
 		"aud list miss":   {map[string]any{"aud": []string{"x", "y"}}, false},
 		"aud is a number": {map[string]any{"aud": 7}, false},
 		"email no at":     {map[string]any{"email": "owner"}, false},
+		"email padded":    {map[string]any{"email": " owner@example.com"}, false},
+		"email non-ascii": {map[string]any{"email": "\u212Aim@example.com"}, false},
+		"aud for another": {map[string]any{"aud": "some-other-relying-party"}, false},
+		"no verified":     {map[string]any{"email_verified": nil}, false},
+		"verified list":   {map[string]any{"email_verified": []any{}}, false},
+		"verified string": {map[string]any{"email_verified": "false"}, false},
+		"exp as string":   {map[string]any{"exp": "9999999999"}, false},
+		"exp huge":        {map[string]any{"exp": 1e300}, false},
 	} {
 		if err := rs(c.over); (err == nil) != c.ok {
 			t.Errorf("%s: err=%v", name, err)
@@ -554,34 +562,95 @@ func TestM2_3_JWKSKeepsOnlyUsableSignatureKeys(t *testing.T) {
 			t.Errorf("%s: error %v is not ErrToken", name, err)
 		}
 	}
-	if _, err := (&Verifier{Keys: set}).Verify(context.Background(), ownerToken(t, now)); !errors.Is(err, ErrToken) {
+	if _, err := (&Verifier{Keys: set, Audience: testAudience}).Verify(context.Background(), ownerToken(t, now)); !errors.Is(err, ErrToken) {
 		t.Fatal("a verifier without an issuer accepted a token")
+	}
+	// A verifier without an audience accepts nothing: a token minted for some
+	// other relying party of the same issuer must never make an owner.
+	if _, err := (&Verifier{Issuer: testIssuer, Keys: set, Now: func() time.Time { return now }}).Verify(context.Background(), ownerToken(t, now)); !errors.Is(err, ErrToken) {
+		t.Fatal("a verifier without an audience accepted a token")
 	}
 }
 
 func TestM2_3_OriginPatternsMatchExactly(t *testing.T) {
+	// Preview patterns: a scheme, a host that may use wildcards, an optional port.
 	for _, c := range []struct {
 		pattern, origin string
 		want            bool
 	}{
 		{"https://*.preview.example.com", "https://pr-1.preview.example.com", true},
 		{"https://*.preview.example.com", "https://pr-1.preview.example.com/path?q=1", true},
+		{"https://*.preview.example.com", "https://a.preview.example.com.", true},
 		{"https://*.preview.example.com", "https://preview.example.com", false},
 		{"https://*.preview.example.com", "https://pr-1.preview.example.com.evil.example", false},
 		{"https://*.preview.example.com", "http://pr-1.preview.example.com", false},
+		{"https://*.preview.example.com", "https://x.preview.example.com@evil.example", false},
+		{"https://*.preview.example.com", "https://evil.example/.preview.example.com", false},
+		{"https://*.preview.example.com", "https://evil.example#.preview.example.com", false},
 		{"https://preview.example.com", "https://preview.example.com:443", true},
+		{"https://preview.example.com/", "https://preview.example.com", true},
 		{"https://preview.example.com:8443", "https://preview.example.com", false},
 		{"https://preview.example.com:8443", "https://preview.example.com:8443", true},
-		{"pr-*.example.com", "http://pr-9.example.com:3000", true},
 		{"https://pr-*-app.example.com", "https://pr-12-app.example.com", true},
 		{"https://pr-*-app.example.com", "https://pr-12-api.example.com", false},
-		{"https://*", "https://anything.example", true},
-		{"", "https://app.example.com", false},
+		{"http://[::1]:3000", "http://[::1]:3000", true},
+		{"http://[::1]", "http://[::1]", true},
+		{"http://[::1]:3000", "http://[::1]:3001", false},
 		{"https://app.example.com", "not a url", false},
 		{"https://app.example.com", "", false},
 	} {
-		if got := matchOrigin(c.pattern, c.origin); got != c.want {
-			t.Errorf("matchOrigin(%q, %q) = %v", c.pattern, c.origin, got)
+		p, err := parsePreviewPattern(c.pattern)
+		if err != nil {
+			t.Errorf("parsePreviewPattern(%q): %v", c.pattern, err)
+			continue
+		}
+		if got := matchPreview([]previewPattern{p}, c.origin); got != c.want {
+			t.Errorf("preview %q vs %q = %v", c.pattern, c.origin, got)
+		}
+	}
+	for _, bad := range []string{"", "pr-*.example.com", "*", "https://", "https://preview.example.com/app", "https://*.example.com:*", "ftp://preview.example.com",
+		"https://[::1", "https://a.example.com?x=1", "https://user@preview.example.com"} {
+		if _, err := parsePreviewPattern(bad); err == nil {
+			t.Errorf("parsePreviewPattern(%q) accepted", bad)
+		}
+	}
+	// Allowed origins are exact: scheme, host, and effective port.
+	allowed, err := parseAllowedOrigin("https://App.Example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for raw, want := range map[string]bool{
+		"https://app.example.com": true, "https://app.example.com:443": true, "HTTPS://APP.example.com": true,
+		"https://app.example.com:8443": false, "http://app.example.com": false, "https://app.example.com.evil.example": false,
+		"https://sub.app.example.com": false, "null": false, "": false,
+	} {
+		o, ok := parseOrigin(raw)
+		if got := ok && o == allowed; got != want {
+			t.Errorf("allowed https://app.example.com vs %q = %v", raw, got)
+		}
+	}
+	for _, bad := range []string{"*", "https://*.example.com", "app.example.com", "https://app.example.com/app", "https://app.example.com?x", "ftp://app.example.com", "https://u@app.example.com"} {
+		if _, err := parseAllowedOrigin(bad); err == nil {
+			t.Errorf("parseAllowedOrigin(%q) accepted", bad)
+		}
+	}
+	// Same-origin: the Origin names the host the request was sent to.
+	for _, c := range []struct {
+		origin, host string
+		want         bool
+	}{
+		{"https://app.example.com", "app.example.com", true},
+		{"https://app.example.com", "APP.example.com:443", true},
+		{"http://127.0.0.1:8787", "127.0.0.1:8787", true},
+		{"http://[::1]:8787", "[::1]:8787", true},
+		{"http://127.0.0.1:8787", "127.0.0.1:8788", false},
+		{"https://app.example.com", "app.example.com:8443", false},
+		{"https://evil.example", "app.example.com", false},
+		{"https://app.example.com", "", false},
+	} {
+		o, _ := parseOrigin(c.origin)
+		if got := sameOrigin(o, c.host); got != c.want {
+			t.Errorf("sameOrigin(%q, %q) = %v", c.origin, c.host, got)
 		}
 	}
 	if !isBot(nil, "deploy[bot]") || !isBot([]string{"CI@example.com"}, "ci@example.com") || isBot([]string{"ci@example.com"}, "owner@example.com") || isBot(nil, "") {

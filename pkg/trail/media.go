@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"chimera/pkg/capsule"
 )
 
 // Fallback dimensions for a media file whose header does not give its size.
@@ -18,8 +20,12 @@ const (
 	fallbackHeight = 720
 )
 
+// mediaKinds are the proof files a Trail shows: raster images and video. An
+// SVG is a document that can carry script, and the page's CSP covers only
+// index.html, not a file opened directly from the bundle — so a Capsule's
+// SVG stays in the Capsule. (The Folio's own reference SVG still ships.)
 var mediaKinds = map[string]string{
-	".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image", ".webp": "image", ".svg": "image",
+	".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image", ".webp": "image",
 	".mp4": "video", ".webm": "video",
 }
 
@@ -56,17 +62,17 @@ func (r *Report) addMedia(l *loaded, info *intentInfo) {
 	}
 }
 
-// mediaID finds the acceptance ID a proof file belongs to: the verdict whose
-// evidence names the file, else an ID spelled in the file name
-// ("m2-1-walkthrough.mp4" → [M2-1]) that the Capsule or its Intent knows.
+// mediaID finds the acceptance ID a proof file belongs to: the acceptance
+// verdict whose evidence names the file by its full member path, else an ID
+// spelled in the file name ("m2-1-walkthrough.mp4" → [M2-1]) that the
+// Capsule or its Intent knows.
 func mediaID(l *loaded, info *intentInfo, member string) string {
-	base := path.Base(member)
 	for _, v := range l.verdicts {
-		if strings.Contains(v.Evidence, member) || strings.Contains(v.Evidence, base) {
+		if capsule.IsAcceptanceID(v.ID) && namesPath(v.Evidence, member) {
 			return v.ID
 		}
 	}
-	for _, m := range idTokenRE.FindAllStringSubmatch(base, -1) {
+	for _, m := range idTokenRE.FindAllStringSubmatch(path.Base(member), -1) {
 		id := "[" + strings.ToUpper(m[1]) + "]"
 		if info != nil && info.declared[id] {
 			return id
@@ -80,6 +86,30 @@ func mediaID(l *loaded, info *intentInfo, member string) string {
 	return ""
 }
 
+// namesPath reports whether text names the path p as a whole token:
+// "see proof/a.png." names proof/a.png; "proof/xa.png" and "myproof/a.png"
+// do not.
+func namesPath(text, p string) bool {
+	pathByte := func(b byte) bool {
+		return b == '_' || b == '-' || b == '/' || b == '.' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= 0x80
+	}
+	for from := 0; ; {
+		i := strings.Index(text[from:], p)
+		if i < 0 {
+			return false
+		}
+		i += from
+		end := i + len(p)
+		before := i == 0 || !pathByte(text[i-1])
+		// A full stop ends a sentence unless more of a name follows it.
+		after := end == len(text) || !pathByte(text[end]) || (text[end] == '.' && (end+1 == len(text) || !pathByte(text[end+1])))
+		if before && after {
+			return true
+		}
+		from = i + 1
+	}
+}
+
 // dimensions reads the pixel size from a media file's own header.
 func dimensions(ext string, data []byte) (w, h int) {
 	switch ext {
@@ -91,8 +121,6 @@ func dimensions(ext string, data []byte) (w, h int) {
 		w, h = jpegSize(data)
 	case ".webp":
 		w, h = webpSize(data)
-	case ".svg":
-		w, h = svgSize(data)
 	case ".mp4":
 		w, h = mp4Size(data, 0)
 	case ".webm":
@@ -153,36 +181,6 @@ func webpSize(d []byte) (int, int) {
 		return int(b&0x3fff) + 1, int((b>>14)&0x3fff) + 1
 	}
 	return 0, 0
-}
-
-var (
-	svgTagRE     = regexp.MustCompile(`(?s)<svg\b[^>]*>`)
-	svgWidthRE   = regexp.MustCompile(`\swidth\s*=\s*["']\s*([0-9.]+)(?:px)?\s*["']`)
-	svgHeightRE  = regexp.MustCompile(`\sheight\s*=\s*["']\s*([0-9.]+)(?:px)?\s*["']`)
-	svgViewBoxRE = regexp.MustCompile(`\sviewBox\s*=\s*["']\s*[-0-9.]+[\s,]+[-0-9.]+[\s,]+([0-9.]+)[\s,]+([0-9.]+)\s*["']`)
-)
-
-func svgSize(d []byte) (int, int) {
-	if len(d) > 1<<16 {
-		d = d[:1<<16]
-	}
-	tag := svgTagRE.Find(d)
-	if tag == nil {
-		return 0, 0
-	}
-	num := func(m [][]byte, i int) int {
-		if m == nil {
-			return 0
-		}
-		f, _ := strconv.ParseFloat(string(m[i]), 64)
-		return int(f + 0.5)
-	}
-	w, h := num(svgWidthRE.FindSubmatch(tag), 1), num(svgHeightRE.FindSubmatch(tag), 1)
-	if w > 0 && h > 0 {
-		return w, h
-	}
-	vb := svgViewBoxRE.FindSubmatch(tag)
-	return num(vb, 1), num(vb, 2)
 }
 
 // mp4Size walks the ISO BMFF boxes moov → trak → tkhd and returns the first

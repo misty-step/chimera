@@ -65,29 +65,85 @@ func (w *GitWorkspace) has(ctx context.Context, sha forge.SHA) bool {
 	return err == nil
 }
 
-// fetch brings the change and the base into the lander's clone.
-func (w *GitWorkspace) fetch(ctx context.Context, c forge.Change, base forge.SHA) error {
-	if w.Remote == "" {
+// fetchRefs brings refs from the forge's remote into the lander's clone
+// (objects only; no local ref moves). A remote that does not answer is the
+// forge being unavailable, not a fault of any change.
+func (w *GitWorkspace) fetchRefs(ctx context.Context, refs ...string) error {
+	if w.Remote == "" || len(refs) == 0 {
 		return nil
 	}
-	refs := []string{}
+	args := append([]string{"fetch", "--quiet", "--no-tags", "--no-write-fetch-head", w.Remote}, refs...)
+	if _, err := w.git(ctx, w.Dir, []string{"GIT_TERMINAL_PROMPT=0"}, args...); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("%w: %s", forge.ErrUnavailable, err)
+	}
+	return nil
+}
+
+// fetch brings the change and the base into the lander's clone.
+func (w *GitWorkspace) fetch(ctx context.Context, c forge.Change) error {
+	var refs []string
 	if c.Ref != "" {
 		refs = append(refs, c.Ref)
 	}
 	if c.Target != "" {
 		refs = append(refs, forge.RefName(c.Target))
 	}
-	if _, err := w.git(ctx, w.Dir, []string{"GIT_TERMINAL_PROMPT=0"}, append([]string{"fetch", "--quiet", "--no-tags", "--no-write-fetch-head", w.Remote}, refs...)...); err != nil {
-		return err
+	return w.fetchRefs(ctx, refs...)
+}
+
+// Contains implements Workspace with git merge-base --is-ancestor. When the
+// tip is not in the clone yet it is fetched from the remote first; a commit
+// still unknown after that is not in the tip's history.
+func (w *GitWorkspace) Contains(ctx context.Context, tip, sha forge.SHA) (bool, error) {
+	if tip.IsZero() || sha.IsZero() {
+		return false, nil
 	}
-	return nil
+	if !w.has(ctx, tip) && w.Remote != "" {
+		// By object name where the remote allows it, else every branch.
+		if err := w.fetchRefs(ctx, string(tip)); err != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			if err := w.fetchRefs(ctx, "refs/heads/*"); err != nil {
+				return false, err
+			}
+		}
+	}
+	if !w.has(ctx, tip) {
+		return false, fmt.Errorf("commit %s is not in the lander's repository", tip.Short())
+	}
+	if !w.has(ctx, sha) {
+		return false, nil
+	}
+	if forge.Same(tip, sha) {
+		return true, nil
+	}
+	_, err := gitx.Run(ctx, w.Dir, "merge-base", "--is-ancestor", string(sha), string(tip))
+	switch {
+	case err == nil:
+		return true, nil
+	case ctx.Err() != nil:
+		return false, ctx.Err()
+	case exitOne(err):
+		return false, nil
+	}
+	return false, err
+}
+
+// exitOne reports a git command that exited 1 without a word: the way
+// merge-base says "no".
+func exitOne(err error) bool {
+	return err != nil && strings.HasSuffix(err.Error(), ": exit status 1")
 }
 
 // Rebase implements Workspace.
 func (w *GitWorkspace) Rebase(ctx context.Context, c forge.Change, base forge.SHA, squash bool) (Rebased, error) {
 	rb := Rebased{Base: base}
 	if !w.has(ctx, c.Head) || !w.has(ctx, base) {
-		if err := w.fetch(ctx, c, base); err != nil {
+		if err := w.fetch(ctx, c); err != nil {
 			return rb, err
 		}
 	}
@@ -97,7 +153,13 @@ func (w *GitWorkspace) Rebase(ctx context.Context, c forge.Change, base forge.SH
 		}
 	}
 	if _, err := gitx.Run(ctx, w.Dir, "merge-base", string(base), string(c.Head)); err != nil {
-		return rb, &RejectError{Reason: "no common history with " + forge.Branch(c.Target)}
+		if ctx.Err() != nil {
+			return rb, ctx.Err()
+		}
+		if exitOne(err) {
+			return rb, &RejectError{Reason: "no common history with " + forge.Branch(c.Target)}
+		}
+		return rb, err
 	}
 	sources, err := gitx.RangeCommits(ctx, w.Dir, string(base), string(c.Head))
 	if err != nil {
@@ -139,7 +201,7 @@ func (w *GitWorkspace) Rebase(ctx context.Context, c forge.Change, base forge.SH
 		sort.Strings(paths)
 		gitx.RunInput(cleanup, tree, nil, env, "rebase", "--abort")
 		if len(paths) == 0 {
-			return rb, err
+			return rb, err // not a conflict: the change itself cannot be replayed
 		}
 		return rb, &ConflictError{Paths: paths}
 	}
@@ -155,10 +217,34 @@ func (w *GitWorkspace) Rebase(ctx context.Context, c forge.Change, base forge.SH
 		return rb, err
 	}
 	// Each replayed commit must be one of the sources, in order, with that
-	// source's trailers intact. Sources Git dropped as already upstream do
-	// not land, so they have nothing to lose.
+	// source's trailers intact.
 	if err := sameTrailers(sources, replayed); err != nil {
 		return rb, err
+	}
+	if !squash {
+		// A rebase replays only non-merge commits that are not upstream yet. A
+		// source it leaves out — a merge commit above all — must not take a
+		// trailer with it: every source trailer has to be in the target's
+		// history once this lands (PRODUCT.md §2.4).
+		upstream, err := gitx.RangeCommits(ctx, w.Dir, string(c.Head), string(base))
+		if err != nil {
+			return rb, err
+		}
+		kept := map[string]bool{}
+		for _, list := range [][]gitx.Commit{replayed, upstream} {
+			for _, k := range list {
+				for _, tr := range k.Trailers {
+					kept[strings.ToLower(tr.Key)+"\x00"+tr.Value] = true
+				}
+			}
+		}
+		for _, src := range sources {
+			for _, tr := range src.Trailers {
+				if !kept[strings.ToLower(tr.Key)+"\x00"+tr.Value] {
+					return rb, &RejectError{Reason: fmt.Sprintf("rebase would drop the trailer %s of %q (a commit a rebase does not replay, such as a merge); land it with --squash, which carries the union", tr.Key, src.Subject)}
+				}
+			}
+		}
 	}
 	if squash {
 		if tip, err = w.squash(ctx, c, base, tip, sources, env); err != nil {
@@ -199,6 +285,9 @@ func (w *GitWorkspace) squash(ctx context.Context, c forge.Change, base forge.SH
 	if err != nil {
 		return "", err
 	}
+	// The first message's own trailer block comes off: the union is written
+	// in its place, so a trailer the source repeats appears once.
+	msg = []byte(stripTrailerBlock(string(msg), first.Trailers))
 	if strings.TrimSpace(string(msg)) == "" {
 		msg = []byte("land " + c.Branch + "\n")
 	}
@@ -222,6 +311,36 @@ func (w *GitWorkspace) squash(ctx context.Context, c forge.Change, base forge.SH
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// stripTrailerBlock removes the last paragraph of msg when it is exactly the
+// trailer block git parsed (one line per trailer, plus folded continuation
+// lines). A message whose last paragraph mixes prose with trailers is left
+// as it is.
+func stripTrailerBlock(msg string, trailers []gitx.Trailer) string {
+	if len(trailers) == 0 {
+		return msg
+	}
+	body := strings.TrimRight(msg, "\n")
+	i := strings.LastIndex(body, "\n\n")
+	if i < 0 {
+		return msg
+	}
+	keys := 0
+	for _, line := range strings.Split(body[i+2:], "\n") {
+		if line != "" && (line[0] == ' ' || line[0] == '\t') {
+			continue // continuation of a folded trailer
+		}
+		k, _, ok := strings.Cut(line, ":")
+		if !ok || k == "" || strings.ContainsAny(k, " \t") {
+			return msg
+		}
+		keys++
+	}
+	if keys != len(trailers) {
+		return msg
+	}
+	return body[:i] + "\n"
 }
 
 func equalTrailers(a, b []gitx.Trailer) bool {
@@ -260,7 +379,10 @@ func (w *GitWorkspace) Publish(ctx context.Context, sha forge.SHA) (string, erro
 	}
 	ref := StagingPrefix + sha.Short()
 	if _, err := w.git(ctx, w.Dir, []string{"GIT_TERMINAL_PROMPT=0"}, "push", "--quiet", "--no-verify", w.Remote, string(sha)+":"+ref); err != nil {
-		return "", err
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		return "", fmt.Errorf("%w: %s", forge.ErrUnavailable, err)
 	}
 	return ref, nil
 }
