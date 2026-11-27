@@ -687,7 +687,8 @@ func TestM2_3_ExampleConfigConfiguresAnInlet(t *testing.T) {
 		t.Fatal(err)
 	}
 	if o.Repo != "acme/widget" || o.Issuer != "https://id.example.com" || o.Audience == "" || o.Debounce != 10*time.Minute || o.DailyCap != 20 ||
-		o.FolioBranch != "chimera/folio" || o.Target != "main" || o.EmailVerified != "required" || o.ClientIPHeader == "" || len(o.OwnerEmails) != 1 {
+		o.FolioBranch != "chimera/folio" || o.Target != "main" || o.EmailVerified != "required" || o.ClientIPHeader == "" || len(o.OwnerEmails) != 1 ||
+		strings.Join(o.Verifier.Command, " ") != "go test ./..." || o.Verifier.Timeout != "10m" {
 		t.Fatalf("%+v", o)
 	}
 }

@@ -102,11 +102,11 @@ func OptionsFromConfig(cfg *config.Config) (Options, error) {
 	}
 	// A reconcile order names the verifier Land uses, so the order and the
 	// landing are judged alike.
-	name := cfg.Land.Verifier
-	if name == "" {
-		name = "default"
+	verifierName := cfg.Land.Verifier
+	if verifierName == "" {
+		verifierName = "default"
 	}
-	if v, ok := cfg.Verifiers[name]; ok {
+	if v, ok := cfg.Verifiers[verifierName]; ok {
 		o.Verifier = capsule.TaskVerifier{Command: v.Command, Timeout: v.Timeout}
 	}
 	return o, nil

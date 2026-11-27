@@ -112,6 +112,139 @@
       "title": "Bench report, phone, dark",
       "localPath": "media/report-mobile-dark-05-full.png",
       "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Terminal walkthrough: chimera trail on a four-commit history (text, --check exit 1 and 3, --json, --html), then Land",
+      "localPath": "media/cli-walkthrough.mp4",
+      "mediaType": "video/mp4"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Walkthrough transcript: every Trail and Land command, its output, and 29 checked exit codes",
+      "localPath": "media/cli-walkthrough.txt",
+      "mediaType": "text/plain"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Trail page in headed Chrome, desktop light: verdict drill-down, capsule video playing",
+      "localPath": "media/trail-desktop-light.webm",
+      "mediaType": "video/webm"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Trail page in headed Chrome, phone dark",
+      "localPath": "media/trail-mobile-dark.webm",
+      "mediaType": "video/webm"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Trail page, desktop 1440x900, light, full page",
+      "localPath": "media/trail-desktop-light-02-full.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Trail page, desktop, dark: one click from a failing verdict to its transcript line",
+      "localPath": "media/trail-desktop-dark-03-verdict-drilldown.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Trail page, phone 390x844, light, full page",
+      "localPath": "media/trail-mobile-light-02-full.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "Trail page, phone, dark: capsule media playing",
+      "localPath": "media/trail-mobile-dark-05-media-playing.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "The generated Trail bundle itself (index.html, trail.css, fonts, media)",
+      "localPath": "media/trail-page/index.html",
+      "mediaType": "text/html"
+    },
+    {
+      "requirementId": "[M2-2]",
+      "repo": "chimera",
+      "title": "Terminal walkthrough: five agent branches enqueued, two land after post-rebase verification, three evicted with reasons; a second lander fences the first",
+      "localPath": "media/cli-walkthrough.mp4",
+      "mediaType": "video/mp4"
+    },
+    {
+      "requirementId": "[M2-2]",
+      "repo": "chimera",
+      "title": "Final frame of the terminal walkthrough, captured before the terminal closed",
+      "localPath": "media/cli-walkthrough-final.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "<chimera-nit> in headed Chrome, desktop light: pick an element, send as owner (QUEUED, SENT) and signed out (RECEIVED)",
+      "localPath": "media/nit-desktop-light.webm",
+      "mediaType": "video/webm"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "<chimera-nit> in headed Chrome, phone dark",
+      "localPath": "media/nit-mobile-dark.webm",
+      "mediaType": "video/webm"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "<chimera-nit> form with the captured selector, desktop light",
+      "localPath": "media/nit-desktop-light-intent-form.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "<chimera-nit> on a 390x844 phone, dark",
+      "localPath": "media/nit-mobile-dark-violation-form.png",
+      "mediaType": "image/png"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "Terminal walkthrough: the Folio-only branch, task Intents, triage inbox, and the guards (origin, media type, loop guard, path fence, daily cap, rate limit)",
+      "localPath": "media/inlet-walkthrough.mp4",
+      "mediaType": "video/mp4"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "Walkthrough transcript: 21 checked commands against the hosted inlet handler",
+      "localPath": "media/inlet-walkthrough.txt",
+      "mediaType": "text/plain"
+    },
+    {
+      "requirementId": "[M2-3]",
+      "repo": "chimera",
+      "title": "Headed-Chrome report: 180 checks over both pages, both viewports, light and dark",
+      "localPath": "media/browser-report.json",
+      "mediaType": "application/json"
+    },
+    {
+      "requirementId": "[M2-1]",
+      "repo": "chimera",
+      "title": "go test -count=1 -race -v ./... with every TestM1_* and TestM2_* result",
+      "localPath": "media/go-test.txt",
+      "mediaType": "text/plain"
     }
   ]
 }
