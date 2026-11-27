@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -551,8 +552,47 @@ func TestM2_3_OwnerNitIsKeptWhenTheOwnerHangsUp(t *testing.T) {
 }
 
 // TestM2_3_DebounceWindowFlushesOnTheRealTimer: the path production uses.
+// Deps.AfterFunc is nil, so the window is a time.AfterFunc timer and the
+// flush runs on the timer's goroutine, through the real BranchPR and git.
+//
+// "All six arrived inside one window" is a statement about wall-clock time,
+// so the test makes it true instead of hoping: accepting a nit costs
+// milliseconds here (the store is in memory and the Folio is read without a
+// subprocess — on a slow disk six durable accepts alone outlast a second),
+// the window is far longer than that, and the arrivals are timed. Should
+// the machine stall for a whole window anyway, the run proves nothing either
+// way and is repeated with a longer window rather than reported as a result.
 func TestM2_3_DebounceWindowFlushesOnTheRealTimer(t *testing.T) {
-	f := newFixture(t, func(o *Options, d *Deps) { o.Debounce = 150 * time.Millisecond; o.DailyCap = 100; d.AfterFunc = nil })
+	window := 1200 * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		took, inside := debounceOnTheRealTimer(t, window)
+		if inside {
+			return
+		}
+		if attempt == 3 {
+			t.Fatalf("six nits never arrived inside one window: the last attempt took %v of %v", took, window)
+		}
+		t.Logf("six nits took %v, longer than the %v window; again with twice the window", took, window)
+		window *= 2
+	}
+}
+
+// debounceOnTheRealTimer posts six owner nits at once and checks what the
+// real timer does with them. inside is false, and nothing was checked, when
+// they did not all arrive before the window could have elapsed.
+func debounceOnTheRealTimer(t *testing.T, window time.Duration) (took time.Duration, inside bool) {
+	t.Helper()
+	store := newMemStore()
+	f := newFixture(t, func(o *Options, d *Deps) {
+		o.Debounce, o.DailyCap = window, 100
+		d.AfterFunc = nil // time.AfterFunc
+		d.Store = store
+		d.FolioPR.(*BranchPR).Store = store
+		d.Folio = func(context.Context) (FolioSnapshot, error) {
+			return FolioSnapshot{Product: productV1, Design: designV1}, nil
+		}
+	})
+	start := time.Now()
 	var wg sync.WaitGroup
 	for i := 0; i < 6; i++ {
 		wg.Add(1)
@@ -564,26 +604,394 @@ func TestM2_3_DebounceWindowFlushesOnTheRealTimer(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	deadline := time.Now().Add(20 * time.Second)
-	for (f.h.Pending() != 0 || f.pushes() == 0 || len(f.forge.Notifications()) == 0) && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	// The window opened no earlier than start and the timer cannot fire
+	// before it has elapsed: all six are in it exactly when this holds.
+	if took = time.Since(start); took >= window {
+		f.h.Close()
+		return took, false
 	}
+	if t.Failed() {
+		t.FailNow()
+	}
+	// Pending counts a flush that is still running, so zero means the
+	// update is pushed, announced, and settled — there is nothing else to
+	// poll for.
+	deadline := time.Now().Add(60 * time.Second)
+	for f.h.Pending() != 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	flushedAfter := time.Since(start)
 	head := f.forge.Refs()["refs/heads/chimera/folio"]
-	if head.IsZero() || f.h.Pending() != 0 {
-		t.Fatalf("the timer never flushed: pending=%d", f.h.Pending())
+	if f.h.Pending() != 0 || head.IsZero() {
+		t.Fatalf("the timer never flushed: pending=%d head=%q", f.h.Pending(), head)
+	}
+	if flushedAfter < window {
+		t.Fatalf("flushed %v into a %v window", flushedAfter, window)
 	}
 	// All six arrived inside one window: one update carries them all.
 	rulings := strings.Split(git(t, f.repo, "ls-tree", "-r", "--name-only", string(head), "folio/rulings"), "\n")
-	if len(rulings) != 6 || f.pushes() != 1 {
-		t.Fatalf("%d rulings in %d pushes", len(rulings), f.pushes())
+	settled, err := store.List(context.Background(), "inlet/"+testRepo+"/flushed/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rulings) != 6 || f.pushes() != 1 || len(f.forge.Notifications()) != 1 || len(settled) != 6 {
+		t.Fatalf("%d rulings in %d pushes, %d notifications, %d settled", len(rulings), f.pushes(), len(f.forge.Notifications()), len(settled))
 	}
 	// Close stops a window that is armed: nothing fires afterwards.
 	f.owner(nitText("armed, then closed"))
 	f.h.Close()
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(window + 300*time.Millisecond)
 	if f.pushes() != 1 || f.h.Pending() != 1 {
 		t.Fatalf("a closed handler flushed: pushes=%d pending=%d", f.pushes(), f.h.Pending())
 	}
+	return took, true
+}
+
+// TestM2_3_CoalescerCloseWaitsForARunningFlush: a flush the timer started
+// is still writing when Close is called. Close returns only when it has
+// finished — the update, OnSettled and OnFlush — and nothing is written, or
+// scheduled, afterwards. All the while the batch counts as pending.
+func TestM2_3_CoalescerCloseWaitsForARunningFlush(t *testing.T) {
+	pr := newSlowPR()
+	var closed atomic.Bool
+	var writes, late atomic.Int32
+	write := func() {
+		writes.Add(1)
+		if closed.Load() {
+			late.Add(1)
+		}
+	}
+	pr.write = write
+	settling, settle := make(chan struct{}), make(chan struct{})
+	c := &Coalescer{PR: pr, Window: 5 * time.Millisecond, Now: time.Now, AfterFunc: realAfterFunc,
+		OnSettled: func(_ Update, landed, _ []Proposal) {
+			close(settling)
+			<-settle
+			for range landed {
+				write()
+			}
+		},
+		OnFlush: func(Update, error) { write() },
+	}
+	c.Add(proposal("a"))
+	c.Add(proposal("b"))
+	<-pr.started // the timer's flush is inside the update
+	if n := c.Pending(); n != 2 {
+		t.Fatalf("pending=%d while a flush carries two proposals", n)
+	}
+	// One more arrives during the flush and opens a window of its own.
+	c.Add(proposal("c"))
+	if n := c.Pending(); n != 3 {
+		t.Fatalf("pending=%d with two in flight and one waiting", n)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		c.Close()
+		closed.Store(true)
+		close(done)
+	}()
+	for !c.isClosed() {
+		time.Sleep(time.Millisecond)
+	}
+	returned := func(d time.Duration) bool {
+		select {
+		case <-done:
+			return true
+		case <-time.After(d):
+			return false
+		}
+	}
+	if returned(150 * time.Millisecond) {
+		t.Fatal("Close returned while the update was still running")
+	}
+	if writes.Load() != 0 || c.Pending() != 3 {
+		t.Fatalf("writes=%d pending=%d before the update was let go", writes.Load(), c.Pending())
+	}
+	close(pr.release) // the update lands...
+	<-settling        // ...and is being settled
+	if returned(150 * time.Millisecond) {
+		t.Fatal("Close returned while the flush was still settling")
+	}
+	if n := c.Pending(); n != 3 {
+		t.Fatalf("pending=%d while the flush is still settling", n)
+	}
+	close(settle)
+	if !returned(10 * time.Second) {
+		t.Fatal("Close never returned")
+	}
+
+	// The update, two settled proposals, and the flush report: all before
+	// Close returned. The third proposal's window was armed during the
+	// flush; it is closed now and must never fire.
+	at := writes.Load()
+	time.Sleep(200 * time.Millisecond) // forty windows
+	if at != 4 || writes.Load() != at || late.Load() != 0 || pr.updates.Load() != 1 {
+		t.Fatalf("writes at Close=%d, later=%d, after Close=%d, updates=%d", at, writes.Load(), late.Load(), pr.updates.Load())
+	}
+	if n := c.Pending(); n != 1 {
+		t.Fatalf("pending=%d: what was waiting stays queued", n)
+	}
+	// Closing again is harmless, and nothing is armed for a late arrival.
+	c.Close()
+	c.Add(proposal("d"))
+	time.Sleep(50 * time.Millisecond)
+	if pr.updates.Load() != 1 || c.Pending() != 2 {
+		t.Fatalf("a closed coalescer flushed: updates=%d pending=%d", pr.updates.Load(), c.Pending())
+	}
+}
+
+// TestM2_3_CoalescerNeverArmsAfterClose: a flush that fails puts its batch
+// back and arms a new window — unless the Coalescer was closed meanwhile.
+func TestM2_3_CoalescerNeverArmsAfterClose(t *testing.T) {
+	pr := newSlowPR()
+	pr.err = errors.New("forge unavailable")
+	var armed atomic.Int32
+	c := &Coalescer{PR: pr, Window: 5 * time.Millisecond, Now: time.Now,
+		AfterFunc: func(d time.Duration, f func()) func() {
+			armed.Add(1)
+			return realAfterFunc(d, f)
+		}}
+	c.Add(proposal("a"))
+	<-pr.started
+	done := make(chan struct{})
+	go func() { c.Close(); close(done) }()
+	// Close has marked the coalescer closed once it is waiting; the failing
+	// update is let go only then.
+	for !c.isClosed() {
+		time.Sleep(time.Millisecond)
+	}
+	close(pr.release)
+	<-done
+	time.Sleep(100 * time.Millisecond) // twenty windows
+	if armed.Load() != 1 || pr.updates.Load() != 1 || c.Pending() != 1 {
+		t.Fatalf("armed=%d updates=%d pending=%d", armed.Load(), pr.updates.Load(), c.Pending())
+	}
+	// Whoever owns the queue can still flush it by hand; a failure then
+	// does not schedule anything either.
+	if _, err := c.Flush(context.Background()); err == nil || armed.Load() != 1 || c.Pending() != 1 {
+		t.Fatalf("err=%v armed=%d pending=%d", err, armed.Load(), c.Pending())
+	}
+	// An open coalescer does retry: the same failure arms the next window.
+	pr2 := newSlowPR()
+	pr2.err = errors.New("forge unavailable")
+	close(pr2.release)
+	var armed2 atomic.Int32
+	c2 := &Coalescer{PR: pr2, Window: time.Hour, Now: time.Now,
+		AfterFunc: func(time.Duration, func()) func() { armed2.Add(1); return func() {} }}
+	defer c2.Close()
+	c2.Add(proposal("a"))
+	if _, err := c2.Flush(context.Background()); err == nil || armed2.Load() != 2 || c2.Pending() != 1 {
+		t.Fatalf("err=%v armed=%d pending=%d", err, armed2.Load(), c2.Pending())
+	}
+}
+
+// TestM2_3_CoalescerStaleTimerLeavesTheNextWindowAlone: a timer that could
+// not be stopped in time (it had already fired) belongs to a window some
+// other flush has emptied. It must not flush the next window early.
+func TestM2_3_CoalescerStaleTimerLeavesTheNextWindowAlone(t *testing.T) {
+	pr := newSlowPR()
+	close(pr.release)
+	var timers []func()
+	c := &Coalescer{PR: pr, Window: time.Hour, Now: time.Now,
+		// stop comes too late for every timer here.
+		AfterFunc: func(_ time.Duration, f func()) func() { timers = append(timers, f); return func() {} }}
+	defer c.Close()
+	c.Add(proposal("a"))
+	if _, err := c.Flush(context.Background()); err != nil || pr.updates.Load() != 1 {
+		t.Fatalf("err=%v updates=%d", err, pr.updates.Load())
+	}
+	c.Add(proposal("b"))
+	if len(timers) != 2 {
+		t.Fatalf("%d windows armed", len(timers))
+	}
+	timers[0]() // the first window's timer, late
+	if pr.updates.Load() != 1 || c.Pending() != 1 {
+		t.Fatalf("a stale timer flushed the next window: updates=%d pending=%d", pr.updates.Load(), c.Pending())
+	}
+	timers[1]()
+	if pr.updates.Load() != 2 || c.Pending() != 0 {
+		t.Fatalf("the window's own timer did not flush: updates=%d pending=%d", pr.updates.Load(), c.Pending())
+	}
+}
+
+// TestM2_3_CoalescerHandlerCloseLeavesNothingRunning: the same on the real
+// path — a directory store, a git repository, the real timer. Close is
+// called the moment the timer's flush starts; when it returns the update is
+// pushed and settled, and neither the store nor the repository changes
+// again. (A flush that outlived Close is what made removing a test's
+// temporary directories fail with "directory not empty".)
+func TestM2_3_CoalescerHandlerCloseLeavesNothingRunning(t *testing.T) {
+	started, proceed := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	f := newFixture(t, func(o *Options, d *Deps) {
+		o.Debounce = 20 * time.Millisecond
+		d.AfterFunc = nil // time.AfterFunc
+		real := d.FolioPR
+		d.FolioPR = prFunc(func(ctx context.Context, batch []Proposal) (Update, error) {
+			once.Do(func() { close(started) })
+			<-proceed
+			return real.Update(ctx, batch)
+		})
+	})
+	if r := f.owner(nitText("closed in mid-flush")); r.Status != StatusFolio {
+		t.Fatalf("%+v", r)
+	}
+	select {
+	case <-started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the timer never flushed")
+	}
+	if n := f.h.Pending(); n != 1 {
+		t.Fatalf("pending=%d while the flush is running", n)
+	}
+	done := make(chan struct{})
+	go func() { f.h.Close(); close(done) }()
+	// The update starts its work — git, the store, the forge — only once
+	// Close is already waiting for it.
+	for !f.h.coalescer.isClosed() {
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case <-done:
+		t.Fatal("Close returned before the flush had done anything")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(proceed)
+	<-done
+	// Nothing to poll for: Close waited.
+	settled := f.keysUnder("inlet/" + testRepo + "/flushed/")
+	if f.h.Pending() != 0 || f.pushes() != 1 || len(f.forge.Notifications()) != 1 || len(settled) != 1 {
+		t.Fatalf("Close returned before the flush was done: pending=%d pushes=%d notifications=%d settled=%v",
+			f.h.Pending(), f.pushes(), len(f.forge.Notifications()), settled)
+	}
+	before := tree(t, f.repo, f.storeDir)
+	time.Sleep(300 * time.Millisecond)
+	if after := tree(t, f.repo, f.storeDir); after != before {
+		t.Fatalf("files changed after Close:\n%s\n--- became ---\n%s", before, after)
+	}
+}
+
+// prFunc is a FolioPR made of a function.
+type prFunc func(ctx context.Context, batch []Proposal) (Update, error)
+
+func (f prFunc) Update(ctx context.Context, batch []Proposal) (Update, error) { return f(ctx, batch) }
+
+// slowPR is a pull request whose update takes as long as the test says.
+type slowPR struct {
+	started chan struct{} // receives once per update, when it begins
+	release chan struct{} // close to let updates finish
+	err     error         // what a finished update returns
+	write   func()        // called when an update writes; may be nil
+	updates atomic.Int32
+}
+
+func newSlowPR() *slowPR {
+	return &slowPR{started: make(chan struct{}, 16), release: make(chan struct{})}
+}
+
+func (s *slowPR) Update(ctx context.Context, batch []Proposal) (Update, error) {
+	s.started <- struct{}{}
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return Update{}, ctx.Err()
+	}
+	s.updates.Add(1)
+	if s.write != nil {
+		s.write()
+	}
+	return Update{Pushed: s.err == nil}, s.err
+}
+
+func proposal(id string) Proposal {
+	return Proposal{ID: id, Summary: "s", Files: []ProposalFile{{Path: "folio/rulings/" + id + ".md", Content: []byte(id + "\n")}}}
+}
+
+// realAfterFunc is what New uses when Deps.AfterFunc is nil.
+func realAfterFunc(d time.Duration, f func()) func() {
+	t := time.AfterFunc(d, f)
+	return func() { t.Stop() }
+}
+
+func (c *Coalescer) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
+
+// tree lists every file under the given directories with its size.
+func tree(t *testing.T, dirs ...string) string {
+	t.Helper()
+	var b strings.Builder
+	for _, dir := range dirs {
+		err := filepath.WalkDir(dir, func(p string, e os.DirEntry, err error) error {
+			if err != nil || e.IsDir() {
+				return err
+			}
+			info, err := e.Info()
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(&b, "%s %d\n", p, info.Size())
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	return b.String()
+}
+
+// memStore is a Store in memory: the write-once semantics of the others
+// without their latency.
+type memStore struct {
+	mu      sync.Mutex
+	objects map[string][]byte
+}
+
+func newMemStore() *memStore { return &memStore{objects: map[string][]byte{}} }
+
+func (m *memStore) Put(ctx context.Context, key string, body []byte) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.objects[key]; ok {
+		return false, nil
+	}
+	m.objects[key] = append([]byte(nil), body...)
+	return true, nil
+}
+
+func (m *memStore) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	body, ok := m.objects[key]
+	if !ok {
+		return nil, objstore.ErrNotFound
+	}
+	return append([]byte(nil), body...), nil
+}
+
+func (m *memStore) List(ctx context.Context, prefix string) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var keys []string
+	for k := range m.objects {
+		if strings.HasPrefix(k, prefix) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys, nil
 }
 
 // TestM2_3_InboxFindsItsPlaceWithoutProbing: an instance that fell behind

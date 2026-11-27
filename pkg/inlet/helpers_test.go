@@ -228,6 +228,7 @@ type fixture struct {
 	opts       Options
 	forge      *forge.Fake
 	store      *objstore.Dir
+	storeDir   string
 	inbox      *MemInbox
 	classifier *fakeClassifier
 	clock      *clock
@@ -242,7 +243,8 @@ func newFixture(t *testing.T, tweak func(*Options, *Deps)) *fixture {
 	f := &fixture{t: t, forge: forge.NewFake(), inbox: &MemInbox{}, classifier: &fakeClassifier{}, clock: newClock()}
 	f.repo, f.head = folioRepo(t)
 	f.forge.SetRef("main", f.head)
-	f.store = objstore.NewDir(filepath.Join(t.TempDir(), "store"))
+	f.storeDir = filepath.Join(t.TempDir(), "store")
+	f.store = objstore.NewDir(f.storeDir)
 	f.pr = &BranchPR{RepoDir: f.repo, Forge: f.forge, Target: "main", Store: f.store, Repo: testRepo, Now: f.clock.Now}
 	f.opts = Options{Repo: testRepo, OwnerEmails: []string{"Owner@Example.com"}, Issuer: testIssuer, Audience: testAudience, JWKS: testJWKS,
 		Target: "main", PreviewOrigins: []string{"https://*.preview.example.com", "http://127.0.0.1:9001"}, BotActors: []string{"bot@example.com"}}

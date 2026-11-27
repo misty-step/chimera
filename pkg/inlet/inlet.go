@@ -320,8 +320,10 @@ func New(opts Options, deps Deps) (*Handler, error) {
 	return h, nil
 }
 
-// Close stops the handler's background work: the JWKS refresh and the
-// scheduled flush. Proposals still waiting stay in the store and are queued
+// Close stops the handler's background work — the JWKS refresh and the
+// scheduled flush — and waits for it: a flush that is already running
+// finishes first, so nothing touches the store or the repository once Close
+// has returned. Proposals still waiting stay in the store and are queued
 // again by the next New.
 func (h *Handler) Close() {
 	if h.remote != nil {
@@ -454,7 +456,8 @@ func (h *Handler) Tick(ctx context.Context, now time.Time) (bool, error) {
 // Flush updates the Folio pull request now with every waiting proposal.
 func (h *Handler) Flush(ctx context.Context) (Update, error) { return h.coalescer.Flush(ctx) }
 
-// Pending reports how many proposals wait for the debounce window.
+// Pending reports how many accepted proposals are not settled yet: waiting
+// for the debounce window, or in a flush that is still running.
 func (h *Handler) Pending() int { return h.coalescer.Pending() }
 
 func (h *Handler) write(w http.ResponseWriter, code int, res Response) {

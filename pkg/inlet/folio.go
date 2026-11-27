@@ -672,14 +672,29 @@ type Coalescer struct {
 	// proposal each refusal is about). May be nil.
 	OnSettled func(up Update, landed []Proposal, refused []Proposal)
 
-	mu       sync.Mutex
-	pending  []Proposal
+	mu      sync.Mutex
+	pending []Proposal
+	// inflight is the batch a flush has taken and is not finished with. It
+	// still counts as waiting until OnSettled and OnFlush have returned.
 	inflight []Proposal
+	// answered: the pull request has answered for inflight, so none of it is
+	// "proposed and not yet in the pull request" any more.
+	answered bool
 	due      time.Time
 	stop     func()
-	closed   bool
-	flushMu  sync.Mutex
+	// gen names the window that is armed. A timer that fires for an older
+	// one (it was stopped too late, or a flush overtook it) does nothing.
+	gen    uint64
+	closed bool
+	// timers counts the scheduled flushes that are running, so Close can
+	// wait for them. Add is only called with mu held and closed false.
+	timers  sync.WaitGroup
+	flushMu sync.Mutex
 }
+
+// scheduledFlushTimeout bounds a flush the timer started, and so how long
+// Close can wait for one.
+const scheduledFlushTimeout = 2 * time.Minute
 
 // Add queues a proposal and reports how many are now waiting.
 func (c *Coalescer) Add(p Proposal) int {
@@ -692,35 +707,70 @@ func (c *Coalescer) Add(p Proposal) int {
 	return len(c.pending)
 }
 
-// arm starts a window; c.mu is held.
+// arm starts a window; c.mu is held. A closed Coalescer still notes when the
+// window would end (Tick reads it) but never schedules anything.
 func (c *Coalescer) arm() {
 	c.due = c.Now().Add(c.Window)
-	if c.AfterFunc != nil && !c.closed {
-		c.stop = c.AfterFunc(c.Window, func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-			c.Flush(ctx)
-		})
+	if c.AfterFunc == nil || c.closed {
+		return
 	}
+	c.gen++
+	gen := c.gen
+	c.stop = c.AfterFunc(c.Window, func() { c.fire(gen) })
 }
 
-// Close stops the scheduled flush. What is waiting stays queued; whoever
-// persisted it can queue it again.
-func (c *Coalescer) Close() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.closed = true
+// disarm cancels the armed window, if any; c.mu is held.
+func (c *Coalescer) disarm() {
+	c.gen++
 	if c.stop != nil {
 		c.stop()
 		c.stop = nil
 	}
 }
 
-// Pending reports how many proposals wait for the window to elapse.
+// fire is what the timer runs when window gen has elapsed.
+func (c *Coalescer) fire(gen uint64) {
+	c.mu.Lock()
+	if c.closed || c.gen != gen {
+		c.mu.Unlock()
+		return
+	}
+	c.timers.Add(1)
+	c.mu.Unlock()
+	defer c.timers.Done()
+	ctx, cancel := context.WithTimeout(context.Background(), scheduledFlushTimeout)
+	defer cancel()
+	c.flush(ctx, gen)
+}
+
+// Close stops the scheduled flush and waits for a flush that is already
+// running to finish, callbacks included: once Close has returned, nothing
+// the Coalescer started is still at work, and nothing is scheduled again. A
+// running flush is not interrupted — it is bounded by its own deadline — so
+// the pull request is never left half updated by a shutdown. What is still
+// waiting stays queued; whoever persisted it can queue it again.
+//
+// Close must not be called from OnSettled or OnFlush.
+func (c *Coalescer) Close() {
+	c.mu.Lock()
+	c.closed = true
+	c.disarm()
+	c.mu.Unlock()
+	// Not under c.mu: the flush being waited for needs it.
+	c.timers.Wait()
+	// A flush somebody called directly is waited for as well: taking the
+	// flush lock is the wait.
+	c.flushMu.Lock()
+	defer c.flushMu.Unlock()
+}
+
+// Pending reports how many proposals are not settled yet: the ones waiting
+// for the window to elapse and the ones a running flush is carrying. It is
+// zero only when there is nothing left to wait for.
 func (c *Coalescer) Pending() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return len(c.pending)
+	return len(c.pending) + len(c.inflight)
 }
 
 // Proposed returns the newest content proposed for path and not yet in the
@@ -728,7 +778,11 @@ func (c *Coalescer) Pending() int {
 func (c *Coalescer) Proposed(path string) ([]byte, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, batch := range [][]Proposal{c.pending, c.inflight} {
+	batches := [][]Proposal{c.pending}
+	if !c.answered {
+		batches = append(batches, c.inflight)
+	}
+	for _, batch := range batches {
 		for i := len(batch) - 1; i >= 0; i-- {
 			for j := len(batch[i].Files) - 1; j >= 0; j-- {
 				if batch[i].Files[j].Path == path {
@@ -758,15 +812,24 @@ func (c *Coalescer) Tick(ctx context.Context, now time.Time) (flushed bool, err 
 // batch stays queued and a new window is armed: nothing is lost, and the
 // pull request is still updated at most once per window.
 func (c *Coalescer) Flush(ctx context.Context) (Update, error) {
+	return c.flush(ctx, 0)
+}
+
+// flush is Flush; window is the one the timer fired for, or zero when the
+// caller asked for the flush directly.
+func (c *Coalescer) flush(ctx context.Context, window uint64) (Update, error) {
 	c.flushMu.Lock()
 	defer c.flushMu.Unlock()
 	c.mu.Lock()
-	batch := c.pending
-	c.pending, c.inflight = nil, batch
-	if c.stop != nil {
-		c.stop()
-		c.stop = nil
+	if window != 0 && (c.closed || c.gen != window) {
+		// Closed, or another flush took this window's batch while the timer
+		// waited its turn: whatever is queued now has a window of its own.
+		c.mu.Unlock()
+		return Update{}, nil
 	}
+	batch := c.pending
+	c.pending, c.inflight, c.answered = nil, batch, false
+	c.disarm()
 	c.mu.Unlock()
 	if len(batch) == 0 {
 		return Update{}, nil
@@ -785,10 +848,12 @@ func (c *Coalescer) Flush(ctx context.Context) (Update, error) {
 		}
 	}
 	c.mu.Lock()
-	c.inflight = nil
+	c.answered = true
 	if err != nil && len(kept) > 0 {
 		rearm := len(c.pending) == 0
 		c.pending = append(kept, c.pending...)
+		// Only what is being settled is still in flight.
+		c.inflight = refused
 		if rearm {
 			c.arm()
 		}
@@ -806,5 +871,9 @@ func (c *Coalescer) Flush(ctx context.Context) (Update, error) {
 	if c.OnFlush != nil {
 		c.OnFlush(up, err)
 	}
+	// Settled and reported: only now is the batch nobody's to wait for.
+	c.mu.Lock()
+	c.inflight = nil
+	c.mu.Unlock()
 	return up, err
 }
