@@ -16,5 +16,9 @@ runners:
   boat: { command: boat }
 harnesses:
   example-agent: { command: ["example-agent", "--prompt-file", "{{.PromptFile}}"] }
+verifiers:
+  default: { command: ["go", "test", "./..."], timeout: 10m }
+lanes:
+  default: { model: example-model, harness: example-agent, effort: high, context_policy: push, runner: local }
 prices:
   example-model: { input_per_mtok: 1.00, output_per_mtok: 4.00 }

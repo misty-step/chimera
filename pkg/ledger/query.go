@@ -390,6 +390,8 @@ func (l *Ledger) Preflight(ctx context.Context, repo string, paths []string, fai
 			}
 			if c.Path != "" {
 				se.Why = "chimera why " + c.Path
+			} else {
+				se.Why = "chimera capsule get " + c.Capsule
 			}
 		} else {
 			se.Source = c.Anchor

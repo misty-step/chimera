@@ -220,6 +220,28 @@ var commands = []*command{
 		Run:   runPreflight,
 	},
 	{
+		Path: []string{"run"}, Summary: "run one lane (a bench of K=1) and record its capsule",
+		Detail: []string{
+			"Provisions a sandbox at --base, runs the lane's harness then the verifier,",
+			"and pushes a capsule: transcript, diff, verdicts. Prints the address and the",
+			"two trailers. Git history is untouched unless --apply. Exits 1 on a FAIL.",
+		},
+		Flags: []flagSpec{flagIntent, flagLane, flagVerifier, flagBrief, flagBase, flagRepo, flagApply, flagMessage, flagJSON},
+		Run:   runRun,
+	},
+	{
+		Path: []string{"bench"}, Summary: "fan out K lanes per cell over frozen fixtures",
+		Detail: []string{
+			"Cells are the cross product of the matrix's LaneConfig axes per fixture.",
+			"Every lane starts from the same base_sha and tree; every capsule is tagged",
+			"bench:<id>, cell:<hash>, k:<n> and indexed. Prints one row per cell:",
+			"criterion pass rate, all-criteria pass count x/K, wall p50/p90, cost (— when",
+			"usage was not reported). --json emits the same rows.",
+		},
+		Flags: []flagSpec{flagMatrix, flagK, flagHTML, flagRepo, flagJSON},
+		Run:   runBench,
+	},
+	{
 		Path: []string{"why"}, Args: "<file[:line]>", MinArgs: 1, MaxArgs: 1,
 		Summary: "git blame → trailers → capsule: intent, lane, verdicts",
 		Detail: []string{
