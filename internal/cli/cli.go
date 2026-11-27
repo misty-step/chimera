@@ -15,7 +15,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/misty-step/chimera/pkg/config"
+	"chimera/pkg/config"
 )
 
 // Exit codes. No others are ever returned.
@@ -54,6 +54,7 @@ type flagSpec struct {
 	Long  string
 	Short byte   // 0 when none; only -K, -h, -q exist
 	Arg   string // value placeholder; "" for boolean flags
+	Multi bool   // may repeat; values join with ","
 	Help  string
 }
 
@@ -111,6 +112,126 @@ var commands = []*command{
 		Run:   runRing0Verify,
 	},
 	{
+		Path: []string{"capsule", "pack"}, Args: "<dir>", MinArgs: 1, MaxArgs: 1,
+		Summary: "build canonical capsule.json and print the address",
+		Detail: []string{
+			"Hashes every file under <dir> into capsule.json (keys sorted, no whitespace).",
+			"The address is sha256 of those bytes: same members and flags, same address.",
+		},
+		Flags: []flagSpec{flagIntent, flagCheckpoint, flagRepo, flagBaseSHA, flagTag},
+		Run:   runCapsulePack,
+	},
+	{
+		Path: []string{"capsule", "push"}, Args: "<dir>", MinArgs: 1, MaxArgs: 1,
+		Summary: "secret gate, write-once upload, readback verify",
+		Detail: []string{
+			"The secret gate scans every byte first; any finding aborts before a request.",
+			"Members upload first and capsule.json last, each with If-None-Match: *,",
+			"each followed by a GET and SHA-256 comparison. Prints the address.",
+		},
+		Run: runCapsulePush,
+	},
+	{
+		Path: []string{"capsule", "get"}, Args: "<sha256:hex>", MinArgs: 1, MaxArgs: 1,
+		Summary: "download a capsule and verify every member hash",
+		Flags:   []flagSpec{flagOut, flagJSON},
+		Run:     runCapsuleGet,
+	},
+	{
+		Path: []string{"capsule", "attach"}, Args: "<commit> <sha256:hex>", MinArgs: 2, MaxArgs: 2,
+		Summary: "add Chimera-Intent and Chimera-Capsule trailers to a commit",
+		Detail: []string{
+			"Adds both trailers (git interpret-trailers) to HEAD or an unpushed commit",
+			"below it, rewriting the linear chain above. Refuses if the capsule is not",
+			"in the store, the commit is pushed, or the chain contains a merge.",
+		},
+		Flags: []flagSpec{flagIntent},
+		Run:   runCapsuleAttach,
+	},
+	{
+		Path: []string{"capsule", "write"}, Args: "<dir>", MinArgs: 1, MaxArgs: 1,
+		Summary: "pack then push in one step",
+		Detail:  []string{"Allocates a checkpoint when --checkpoint is omitted. Prints the address."},
+		Flags:   []flagSpec{flagIntent, flagCheckpoint, flagRepo, flagBaseSHA, flagTag},
+		Run:     runCapsuleWrite,
+	},
+	{
+		Path: []string{"capsule", "read"}, Args: "<sha256:hex>", MinArgs: 1, MaxArgs: 1,
+		Summary: "same as get",
+		Flags:   []flagSpec{flagOut, flagJSON},
+		Run:     runCapsuleGet,
+	},
+	{
+		Path: []string{"capsule", "verify"}, Args: "<sha256:hex|dir>", MinArgs: 1, MaxArgs: 1,
+		Summary: "check every member hash; write nothing",
+		Detail: []string{
+			"An address is fetched from the store and every member compared with",
+			"capsule.json; a directory is checked against its own capsule.json.",
+		},
+		Flags: []flagSpec{flagJSON},
+		Run:   runCapsuleVerify,
+	},
+	{
+		Path: []string{"ledger", "index"}, Summary: "add the Git tree's T0 documents and any new capsules",
+		Detail: []string{
+			"T0 rows follow HEAD (added, replaced, removed); capsules in the store that",
+			"are not yet indexed are fetched, verified, and added. Converges on rebuild.",
+		},
+		Flags: []flagSpec{flagRepo},
+		Run:   runLedgerIndex,
+	},
+	{
+		Path: []string{"ledger", "query"}, Args: "<text>", MinArgs: 1, MaxArgs: 1,
+		Summary: "search; rank tier, then freshness, then BM25",
+		Detail: []string{
+			"Every word must match (FTS5). A lower tier never outranks a higher one.",
+			"STATE is fresh, or drift=N: commits that touched the path since the anchor.",
+		},
+		Flags: []flagSpec{flagTier, flagPathFilter, flagSuperseded, flagLimit, flagJSON},
+		Run:   runLedgerQuery,
+	},
+	{
+		Path: []string{"ledger", "rebuild"}, Summary: "drop the database and replay Git and the object store",
+		Detail: []string{"The Ledger is derived: T0 from the Git tree, everything else from capsules."},
+		Flags:  []flagSpec{flagRepo},
+		Run:    runLedgerRebuild,
+	},
+	{
+		Path: []string{"ledger", "dump"}, Summary: "print every row in canonical form",
+		Detail: []string{"One canonical JSON object per line; equal dumps mean equal ledgers."},
+		Flags:  []flagSpec{flagCanonical},
+		Run:    runLedgerDump,
+	},
+	{
+		Path: []string{"ledger", "status"}, Summary: "row counts per tier and the dump digest",
+		Flags: []flagSpec{flagJSON},
+		Run:   runLedgerStatus,
+	},
+	{
+		Path: []string{"preflight"}, Args: "[paths…]", MaxArgs: -1,
+		Summary: "at most 2048 bytes of scent for target paths",
+		Detail: []string{
+			"Highest-authority, freshest non-superseded entries for the paths, plus any",
+			"entry recording the same normalized failure signature. WARN lines name",
+			"prior failing capsules and the 'chimera why' command that resolves them.",
+			"Same inputs and same ledger give byte-identical output.",
+		},
+		Flags: []flagSpec{flagRepo, flagPaths, flagFailure, flagJSON},
+		Run:   runPreflight,
+	},
+	{
+		Path: []string{"why"}, Args: "<file[:line]>", MinArgs: 1, MaxArgs: 1,
+		Summary: "git blame → trailers → capsule: intent, lane, verdicts",
+		Detail: []string{
+			"Blames the line (or takes the file's last commit), reads its trailers,",
+			"fetches and verifies the capsule, and prints intent, capsule, lane, and the",
+			"verdicts covering the file. ANCHOR is HEAD-N plus drift: commits that have",
+			"touched the file since. Exits 1 when the commit carries no trailers.",
+		},
+		Flags: []flagSpec{flagJSON},
+		Run:   runWhy,
+	},
+	{
 		Path: []string{"version"}, Summary: "print module version and VCS revision",
 		Flags: []flagSpec{flagJSON},
 		Run:   runVersion,
@@ -160,24 +281,33 @@ func Run(parent context.Context, inv Invocation) int {
 	}
 	c := &ctx{Context: parent, inv: inv, json: jsonWanted, colorE: colorAllowed(inv.Stderr, inv.Env)}
 
-	cmd, rest, groupPath, err := resolve(inv.Args)
+	// Global flags may precede the command words (chimera --json version).
+	pre, words, err := splitLeading(inv.Args)
+	if err != nil {
+		return c.fail("", err)
+	}
+	cmd, rest, groupPath, err := resolve(words)
 	if err != nil {
 		return c.fail("", err)
 	}
 	if cmd == nil {
-		// Bare `chimera`, `chimera --help`, or a noun without a verb.
-		wantHelp := containsHelp(rest)
-		text := helpTop()
-		if len(groupPath) > 0 {
-			text = helpGroup(groupPath)
-		}
-		if wantHelp {
+		// Bare `chimera`, `chimera --help`, or a noun without a verb. Help is
+		// data on stdout only when asked for; otherwise this is a usage error
+		// rendered like every other error (DESIGN.md §1.5).
+		if containsHelp(pre) || containsHelp(rest) {
+			text := helpTop()
+			if len(groupPath) > 0 {
+				text = helpGroup(groupPath)
+			}
 			io.WriteString(inv.Stdout, text)
 			return ExitOK
 		}
-		io.WriteString(inv.Stderr, text)
-		return ExitUsage
+		if len(groupPath) > 0 {
+			return c.fail("", usageErr(groupPath[0], "missing verb", fmt.Sprintf("run 'chimera %s --help'", groupPath[0])))
+		}
+		return c.fail("", usageErr("", "missing command", "run 'chimera --help'"))
 	}
+	rest = append(append([]string{}, pre...), rest...)
 	c.cmd = cmd
 	if err := c.parse(rest); err != nil {
 		return c.fail(cmd.name(), err)
@@ -199,6 +329,32 @@ func containsHelp(args []string) bool {
 		}
 	}
 	return false
+}
+
+// splitLeading separates global flags written before the command words from
+// the rest. Only the global flags and --json may appear there; a command's own
+// flags are unknown until the command is.
+func splitLeading(args []string) (pre, rest []string, err error) {
+	i := 0
+	for ; i < len(args); i++ {
+		a := args[i]
+		if a == "-" || a == "--" || !strings.HasPrefix(a, "-") {
+			break
+		}
+		switch {
+		case a == "--json", a == "--help", a == "-h", a == "--quiet", a == "-q", strings.HasPrefix(a, "--config="):
+			pre = append(pre, a)
+		case a == "--config":
+			if i+1 >= len(args) {
+				return nil, nil, usageErr("--config", "missing value <path>", "run 'chimera --help'")
+			}
+			pre = append(pre, a, args[i+1])
+			i++
+		default:
+			return nil, nil, usageErr(a, "unknown flag before the command", "run 'chimera --help'")
+		}
+	}
+	return pre, args[i:], nil
 }
 
 // resolve finds the longest command path that prefixes the leading
@@ -260,7 +416,9 @@ func (c *ctx) parse(args []string) error {
 	byLong := map[string]flagSpec{}
 	byShort := map[byte]flagSpec{}
 	for _, f := range specs {
-		byLong[f.Long] = f
+		if f.Long != "k" { // -K is short-only (DESIGN.md §1.1)
+			byLong[f.Long] = f
+		}
 		if f.Short != 0 {
 			byShort[f.Short] = f
 		}
@@ -309,10 +467,13 @@ func (c *ctx) parse(args []string) error {
 		}
 		if !hasValue {
 			if i+1 >= len(args) {
-				return usageErr("--"+spec.Long, "missing value <"+spec.Arg+">", next)
+				return usageErr(strings.Fields(flagLabel(spec))[0], "missing value <"+spec.Arg+">", next)
 			}
 			i++
 			value = args[i]
+		}
+		if prev, ok := c.flags[spec.Long]; ok && spec.Multi {
+			value = prev + "," + value
 		}
 		c.flags[spec.Long] = value
 	}
@@ -342,6 +503,25 @@ func (c *ctx) loadConfig() (*config.Config, error) {
 		return nil, usageErr("config", err.Error(), "nothing was attempted")
 	}
 	return cfg, nil
+}
+
+// list returns a Multi flag's values, split on commas, without empties.
+func (c *ctx) list(name string) []string {
+	var out []string
+	for _, v := range strings.Split(c.flags[name], ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// abs resolves a user-supplied path against the invocation directory.
+func (c *ctx) abs(p string) string {
+	if p == "" || isAbs(p) {
+		return p
+	}
+	return join(c.inv.Dir, p)
 }
 
 // info writes a progress or summary line to stderr unless -q.

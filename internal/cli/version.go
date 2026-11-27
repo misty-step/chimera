@@ -6,7 +6,7 @@ import (
 	"runtime/debug"
 )
 
-const modulePath = "github.com/misty-step/chimera"
+const modulePath = "chimera"
 
 type versionInfo struct {
 	Schema       string `json:"schema"`

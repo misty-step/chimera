@@ -18,6 +18,9 @@ func flagLabel(f flagSpec) string {
 	if f.Short != 0 {
 		s = fmt.Sprintf("-%c, %s", f.Short, s)
 	}
+	if f.Long == "k" {
+		s = "-K"
+	}
 	if f.Arg != "" {
 		s += " <" + f.Arg + ">"
 	}
@@ -64,12 +67,33 @@ func flagRows(fs []flagSpec) [][2]string {
 
 const exitLine = "exit codes: 0 ok, 1 error, 2 usage, 3 pending\n"
 
+// helpTop lists one row per noun (with its verbs) and one per top-level verb,
+// all read from the command table, so it stays within 24 lines.
 func helpTop() string {
+	var rows [][2]string
+	seen := map[string]bool{}
+	for _, c := range commands {
+		if seen[c.Path[0]] {
+			continue
+		}
+		seen[c.Path[0]] = true
+		if len(c.Path) == 1 {
+			rows = append(rows, [2]string{c.Path[0], c.Summary})
+			continue
+		}
+		var verbs []string
+		for _, v := range commands {
+			if len(v.Path) == 2 && v.Path[0] == c.Path[0] {
+				verbs = append(verbs, v.Path[1])
+			}
+		}
+		rows = append(rows, [2]string{c.Path[0] + " <verb>", strings.Join(verbs, ", ")})
+	}
 	var b strings.Builder
 	b.WriteString("usage: chimera <noun> <verb> [args] [--flags]\n")
 	b.WriteString("       chimera <verb> [args] [--flags]\n\n")
 	b.WriteString("commands:\n")
-	b.WriteString(table("  ", commandRows(func(*command) bool { return true })))
+	b.WriteString(table("  ", rows))
 	b.WriteString("\nglobal flags:\n")
 	b.WriteString(table("  ", flagRows(globals)))
 	b.WriteString("\n" + exitLine)

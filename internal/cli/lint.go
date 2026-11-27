@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/misty-step/chimera/pkg/gitx"
-	"github.com/misty-step/chimera/pkg/secretscan"
+	"chimera/pkg/gitx"
+	"chimera/pkg/secretscan"
 )
 
 // RuleUnreadable marks a file the scanner could not read. It always fails the

@@ -4,7 +4,7 @@ package main
 import (
 	"os"
 
-	"github.com/misty-step/chimera/internal/cli"
+	"chimera/internal/cli"
 )
 
 func main() {

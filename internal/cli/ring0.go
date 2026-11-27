@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/misty-step/chimera/pkg/gitx"
+	"chimera/pkg/gitx"
 )
 
 // LockPath is the Ring-0 lock, relative to the repository root.

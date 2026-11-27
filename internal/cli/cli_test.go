@@ -387,7 +387,7 @@ func TestM1_1_UsageErrorsExit2(t *testing.T) {
 
 func TestM1_1_HelpFitsIn24LinesAndComesFromTable(t *testing.T) {
 	dir := t.TempDir()
-	helps := [][]string{{"--help"}, {"-h"}, {"lint", "--help"}, {"ring0", "-h"}}
+	helps := [][]string{{"--help"}, {"-h"}, {"lint", "--help"}, {"ring0", "-h"}, {"capsule", "--help"}, {"ledger", "-h"}, {"--help", "lint"}}
 	for _, c := range commands {
 		helps = append(helps, append(append([]string{}, c.Path...), "--help"))
 	}
@@ -400,14 +400,26 @@ func TestM1_1_HelpFitsIn24LinesAndComesFromTable(t *testing.T) {
 			t.Errorf("%v: %d lines", args, n)
 		}
 	}
+	// The top page lists every noun with its verbs and every top-level verb
+	// with its summary; each noun page lists its verbs' summaries.
 	top := run(t, dir, nil, "--help").stdout
 	for _, c := range commands {
-		if !strings.Contains(top, c.name()) || !strings.Contains(top, c.Summary) {
-			t.Errorf("top help missing %q", c.name())
+		if len(c.Path) == 1 {
+			if !strings.Contains(top, "  "+c.Path[0]) || !strings.Contains(top, c.Summary) {
+				t.Errorf("top help missing %q", c.name())
+			}
+		} else {
+			if !strings.Contains(top, "  "+c.Path[0]+" <verb>") || !strings.Contains(top, c.Path[1]) {
+				t.Errorf("top help missing %q", c.name())
+			}
+			group := run(t, dir, nil, c.Path[0], "--help").stdout
+			if !strings.Contains(group, c.name()) || !strings.Contains(group, c.Summary) {
+				t.Errorf("%s help missing %q", c.Path[0], c.name())
+			}
 		}
 		h := run(t, dir, nil, append(append([]string{}, c.Path...), "--help")...).stdout
 		for _, f := range c.Flags {
-			if !strings.Contains(h, "--"+f.Long) {
+			if !strings.Contains(h, strings.Fields(flagLabel(f))[0]) {
 				t.Errorf("%s help missing --%s", c.name(), f.Long)
 			}
 		}
@@ -484,7 +496,7 @@ func TestM1_1_VersionReportsVCSRevision(t *testing.T) {
 	}
 	root, _ := filepath.Abs("../..")
 	src := t.TempDir()
-	cp := exec.Command("cp", "-r", filepath.Join(root, "go.mod"), filepath.Join(root, "go.sum"), filepath.Join(root, "cmd"), filepath.Join(root, "internal"), filepath.Join(root, "pkg"), src)
+	cp := exec.Command("cp", "-r", filepath.Join(root, "go.mod"), filepath.Join(root, "go.sum"), filepath.Join(root, "cmd"), filepath.Join(root, "internal"), filepath.Join(root, "pkg"), filepath.Join(root, "folio"), src)
 	if out, err := cp.CombinedOutput(); err != nil {
 		t.Fatalf("%v %s", err, out)
 	}

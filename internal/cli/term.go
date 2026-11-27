@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/misty-step/chimera/pkg/config"
+	"chimera/pkg/config"
 )
 
 // colorAllowed reports whether ANSI escapes may be written to w: w is a TTY,
