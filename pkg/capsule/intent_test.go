@@ -21,12 +21,12 @@ func TestM2_1_AcceptanceIDsAreDeclaredNotMerelyMentioned(t *testing.T) {
 	if !IsAcceptanceID("[M2-3]") || IsAcceptanceID("verifier") || IsAcceptanceID("[m2-3]") || IsAcceptanceID("M2-3") {
 		t.Fatal("IsAcceptanceID")
 	}
-	// The repository's own Folio declares exactly its seven milestone items.
+	// The repository's own Folio declares exactly its eight milestone items.
 	folio, err := os.ReadFile(filepath.Join("..", "..", "PRODUCT.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(AcceptanceIDs(string(folio)), " "); got != "[M1-1] [M1-2] [M1-3] [M1-4] [M2-1] [M2-2] [M2-3]" {
+	if got := strings.Join(AcceptanceIDs(string(folio)), " "); got != "[M1-1] [M1-2] [M1-3] [M1-4] [M2-1] [M2-2] [M2-3] [M2-4]" {
 		t.Fatalf("PRODUCT.md declares %q", got)
 	}
 }

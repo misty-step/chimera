@@ -19,6 +19,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"chimera/pkg/obslint"
 	"chimera/pkg/secretscan"
 )
 
@@ -40,6 +41,8 @@ type Config struct {
 	Forge     Forge                     `yaml:"forge"`
 	Land      Land                      `yaml:"land"`
 	Inlet     Inlet                     `yaml:"inlet"`
+
+	Observability Observability `yaml:"observability"`
 
 	// Path is the file the config was read from; empty when none was found.
 	Path string `yaml:"-"`
@@ -123,6 +126,12 @@ type Land struct {
 
 // Inlet configures the POST /v1/inlet/nit handler (PRODUCT.md §2.6). The
 // handler is an http.Handler in pkg/inlet; whatever hosts it reads this block.
+// Observability configures 'chimera lint observability' for the audited
+// repository. Allow waives findings by rule ID; "*" opts the repository out.
+type Observability struct {
+	Allow []string `yaml:"allow"`
+}
+
 type Inlet struct {
 	Repo        string `yaml:"repo"`
 	Issuer      string `yaml:"issuer"`   // required "iss" of the edge token
@@ -313,6 +322,12 @@ func expandHome(p, home string) string {
 }
 
 func (c *Config) validate() error {
+	for i, a := range c.Observability.Allow {
+		if !obslint.KnownAllow(a) {
+			// The value is not echoed: errors are printed, and config values may be tenant terms.
+			return &LoadError{Path: c.Path, Msg: fmt.Sprintf("observability.allow[%d]: unknown rule (want \"*\" or one of %s)", i, strings.Join(obslint.Rules, ", "))}
+		}
+	}
 	for _, g := range c.Ring0.Paths {
 		if strings.HasPrefix(g, "/") || strings.Contains(g, "..") {
 			return &LoadError{Path: c.Path, Msg: fmt.Sprintf("ring0.paths: %q must be relative to the repository root", g)}

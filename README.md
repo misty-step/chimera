@@ -7,7 +7,7 @@ runs production work (`K=1`) and replay evaluations (`K=n`).
 > **Status:** Milestones 1 and 2 are implemented. M1 (evidence core): `[M1-1]` CLI skeleton, tenant-leak lint,
 > Ring-0 lock; `[M1-2]` Capsules and `why`; `[M1-3]` the Ledger and pre-flight; `[M1-4]` `run` and `bench`.
 > M2 (review, landing, feedback): `[M2-1]` Trail; `[M2-2]` the Forge interface and the Land MergeTrain;
-> `[M2-3]` the Inlet handler and `<chimera-nit>`. The Go implementation is compiled from the Active Folio below.
+> `[M2-3]` the Inlet handler and `<chimera-nit>`; `[M2-4]` the observability readiness lint. The Go implementation is compiled from the Active Folio below.
 >
 > ```sh
 > go build -o chimera ./cmd/chimera && ./chimera --help
@@ -63,7 +63,23 @@ chimera trail main..HEAD --html out               # static Trail page: no script
 chimera land enqueue agent/fix                    # pin the branch head in the queue (a ref, by compare-and-swap)
 chimera land status agent/fix                     # exit 0 LANDED, 1 EVICTED (with the reason), 3 PENDING
 chimera land run                                  # epoch fence → rebase → verify the rebased tree → CAS push
+
+chimera lint observability ./app --strict         # health, telemetry, client error capture; exit 1 per gap
 ```
+
+**Observability lint** (`pkg/obslint`) detects a web app (an `index.html` at the root or in `public/`, `static/`,
+`src/`, …; a web-framework `package.json`; a worker serving assets), an edge worker (`wrangler.toml`/`.json`/`.jsonc`),
+or an HTTP service (a Go, Node, or Python server; `Procfile` `web:`; `fly.toml`), then checks three invariants by
+lexical rules: a `/healthz` or `/api/health` route reporting status and a release read at runtime (within 15 lines
+of the route or the handler it names); `observability.enabled` (never `false` in any environment) or server errors
+forwarded to a sink whose DSN comes from env (a committed DSN is a finding); and, for web surfaces, browser
+`error`, `unhandledrejection`, and `securitypolicyviolation` listeners that forward events — to a same-origin
+path when a strict `connect-src 'self'` applies. A library or CLI is `not-applicable`. Tests, fixtures, examples,
+dependencies, and build output are not audited. The audited repository's `chimera.yaml` may waive rules by ID
+(`observability.allow: [client-csp-missing]`) or opt out (`["*"]`). Rules: `health-missing`, `health-stub`,
+`telemetry-missing`, `telemetry-disabled`, `sink-committed`, `client-error-missing`, `client-rejection-missing`,
+`client-csp-missing`, `client-forward-missing`, `beacon-cross-origin`, and under `--strict` `unreadable` and
+`truncated` (files over 4 MiB, scans over 50,000 files).
 
 **Trail** walks `Chimera-Intent` / `Chimera-Capsule` trailers, fetches and verifies every Capsule, and reports
 what needs a reader: open risk (`R0`–`R3`; Ring-0 paths are always `R3`), unmet intent and orphan proof (spec

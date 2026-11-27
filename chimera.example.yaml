@@ -22,6 +22,8 @@ lanes:
   default: { model: example-model, harness: example-agent, effort: high, context_policy: push, runner: local }
 prices:
   example-model: { input_per_mtok: 1.00, output_per_mtok: 4.00 }
+observability:
+  allow: []                   # in the audited repo: rule IDs to waive, or ["*"] to opt out of lint observability
 risk:
   r2: ["pkg/objstore/**", "go.mod"]
   r3: ["migrations/**"]
