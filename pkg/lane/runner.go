@@ -145,7 +145,7 @@ func run(ctx context.Context, dir string, argv, env []string, timeout time.Durat
 func baseEnv() []string {
 	var env []string
 	for _, kv := range os.Environ() {
-		if strings.HasPrefix(kv, "CHIMERA_S3_") {
+		if strings.HasPrefix(kv, "CHIMERA_S3_") || strings.HasPrefix(kv, "CHIMERA_FORGE_") {
 			continue
 		}
 		env = append(env, kv)

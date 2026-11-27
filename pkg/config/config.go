@@ -36,6 +36,10 @@ type Config struct {
 	Verifiers map[string]Verifier       `yaml:"verifiers"`
 	Lanes     map[string]Lane           `yaml:"lanes"`
 	Prices    map[string]Price          `yaml:"prices"`
+	Risk      Risk                      `yaml:"risk"`
+	Forge     Forge                     `yaml:"forge"`
+	Land      Land                      `yaml:"land"`
+	Inlet     Inlet                     `yaml:"inlet"`
 
 	// Path is the file the config was read from; empty when none was found.
 	Path string `yaml:"-"`
@@ -92,8 +96,54 @@ type Price struct {
 	OutputPerMTok float64 `yaml:"output_per_mtok"`
 }
 
+// Risk maps path globs to the risk class a change touching them carries
+// (PRODUCT.md §2.4). Ring-0 paths are always R3 and need no entry here.
+type Risk struct {
+	R1 []string `yaml:"r1"`
+	R2 []string `yaml:"r2"`
+	R3 []string `yaml:"r3"`
+}
+
+// Forge selects the forge adapter behind the five-method Forge interface.
+type Forge struct {
+	Kind string `yaml:"kind"` // github | git
+	Repo string `yaml:"repo"` // owner/name on the forge (github)
+	API  string `yaml:"api"`  // REST root (github); empty means the public API
+	Dir  string `yaml:"dir"`  // repository holding the refs (git); empty means the current one
+}
+
+// Land configures the MergeTrain (PRODUCT.md §2.5).
+type Land struct {
+	Target   string `yaml:"target"`   // ref changes land on
+	Verifier string `yaml:"verifier"` // verifier run on every rebased tree (default: default)
+	Runner   string `yaml:"runner"`   // runner of the verifying lane (default: local)
+	Strategy string `yaml:"strategy"` // rebase | squash
+	Remote   string `yaml:"remote"`   // git remote of the forge, for object transport; empty when the forge is this repository
+}
+
+// Inlet configures the POST /v1/inlet/nit handler (PRODUCT.md §2.6). The
+// handler is an http.Handler in pkg/inlet; whatever hosts it reads this block.
+type Inlet struct {
+	Repo            string   `yaml:"repo"`
+	Issuer          string   `yaml:"issuer"`   // required "iss" of the edge token
+	Audience        string   `yaml:"audience"` // required "aud"; empty skips the check
+	JWKSURL         string   `yaml:"jwks_url"`
+	JWKSFile        string   `yaml:"jwks_file"`
+	TokenHeader     string   `yaml:"token_header"` // edge header carrying the token, besides Authorization: Bearer
+	TokenCookie     string   `yaml:"token_cookie"` // edge session cookie carrying the token
+	Debounce        string   `yaml:"debounce"`     // Go duration; window before the Folio PR is updated
+	DailyCap        int      `yaml:"daily_cap"`    // owner nits classified per repo per UTC day
+	PreviewOrigins  []string `yaml:"preview_origins"`
+	BotActors       []string `yaml:"bot_actors"`
+	TriagePerMinute int      `yaml:"triage_per_minute"`
+	AllowedOrigins  []string `yaml:"allowed_origins"` // cross-origin pages that may post (CORS)
+	FolioBranch     string   `yaml:"folio_branch"`    // head of the one open Folio-only PR
+	Target          string   `yaml:"target"`          // branch the Folio PR proposes to change
+	Classifier      Harness  `yaml:"classifier"`      // external command: nit JSON on stdin, decision JSON on stdout
+}
+
 // SecretEnv lists the environment variables Chimera treats as secrets.
-var SecretEnv = []string{"CHIMERA_S3_ACCESS_KEY_ID", "CHIMERA_S3_SECRET_ACCESS_KEY", "CHIMERA_S3_SESSION_TOKEN"}
+var SecretEnv = []string{"CHIMERA_S3_ACCESS_KEY_ID", "CHIMERA_S3_SECRET_ACCESS_KEY", "CHIMERA_S3_SESSION_TOKEN", "CHIMERA_FORGE_TOKEN"}
 
 // Env is a read-only view of the process environment.
 type Env func(key string) string
@@ -215,6 +265,16 @@ func applyEnv(cfg *Config, env Env) {
 	str("CHIMERA_STORE_REGION", &cfg.Store.Region)
 	str("CHIMERA_LEDGER_PATH", &cfg.Ledger.Path)
 	list("CHIMERA_RING0_PATHS", &cfg.Ring0.Paths)
+	str("CHIMERA_FORGE_KIND", &cfg.Forge.Kind)
+	str("CHIMERA_FORGE_REPO", &cfg.Forge.Repo)
+	str("CHIMERA_FORGE_API", &cfg.Forge.API)
+	str("CHIMERA_FORGE_DIR", &cfg.Forge.Dir)
+	str("CHIMERA_LAND_TARGET", &cfg.Land.Target)
+	str("CHIMERA_INLET_REPO", &cfg.Inlet.Repo)
+	str("CHIMERA_INLET_ISSUER", &cfg.Inlet.Issuer)
+	str("CHIMERA_INLET_AUDIENCE", &cfg.Inlet.Audience)
+	str("CHIMERA_INLET_JWKS_URL", &cfg.Inlet.JWKSURL)
+	str("CHIMERA_INLET_JWKS_FILE", &cfg.Inlet.JWKSFile)
 	cfg.Secrets = map[string]string{}
 	for _, k := range SecretEnv {
 		if v := env(k); v != "" {
@@ -224,6 +284,8 @@ func applyEnv(cfg *Config, env Env) {
 	home := env("HOME")
 	cfg.Tenant.DenylistFile = expandHome(cfg.Tenant.DenylistFile, home)
 	cfg.Ledger.Path = expandHome(cfg.Ledger.Path, home)
+	cfg.Forge.Dir = expandHome(cfg.Forge.Dir, home)
+	cfg.Inlet.JWKSFile = expandHome(cfg.Inlet.JWKSFile, home)
 }
 
 func splitList(v string) []string {
@@ -270,6 +332,45 @@ func (c *Config) validate() error {
 	for name, v := range c.Verifiers {
 		if err := checkDuration(v.Timeout); err != nil {
 			return &LoadError{Path: c.Path, Msg: fmt.Sprintf("verifiers.%s.timeout: %v", name, err)}
+		}
+	}
+	for class, globs := range map[string][]string{"r1": c.Risk.R1, "r2": c.Risk.R2, "r3": c.Risk.R3} {
+		for _, g := range globs {
+			if strings.HasPrefix(g, "/") || strings.Contains(g, "..") {
+				return &LoadError{Path: c.Path, Msg: fmt.Sprintf("risk.%s: %q must be relative to the repository root", class, g)}
+			}
+		}
+	}
+	switch c.Forge.Kind {
+	case "", "github", "git":
+	default:
+		return &LoadError{Path: c.Path, Msg: "forge.kind: must be github or git"}
+	}
+	if c.Forge.API != "" {
+		if u, err := url.Parse(c.Forge.API); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return &LoadError{Path: c.Path, Msg: "forge.api: not an absolute URL"}
+		}
+	}
+	switch c.Land.Strategy {
+	case "", "rebase", "squash":
+	default:
+		return &LoadError{Path: c.Path, Msg: "land.strategy: must be rebase or squash"}
+	}
+	if err := checkDuration(c.Inlet.Debounce); err != nil {
+		return &LoadError{Path: c.Path, Msg: fmt.Sprintf("inlet.debounce: %v", err)}
+	}
+	if err := checkDuration(c.Inlet.Classifier.Timeout); err != nil {
+		return &LoadError{Path: c.Path, Msg: fmt.Sprintf("inlet.classifier.timeout: %v", err)}
+	}
+	if c.Inlet.DailyCap < 0 || c.Inlet.TriagePerMinute < 0 {
+		return &LoadError{Path: c.Path, Msg: "inlet.daily_cap and inlet.triage_per_minute: must not be negative"}
+	}
+	for _, key := range []struct{ name, value string }{{"inlet.issuer", c.Inlet.Issuer}, {"inlet.jwks_url", c.Inlet.JWKSURL}} {
+		if key.value == "" {
+			continue
+		}
+		if u, err := url.Parse(key.value); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return &LoadError{Path: c.Path, Msg: key.name + ": not an absolute URL"}
 		}
 	}
 	for name, l := range c.Lanes {
@@ -337,13 +438,24 @@ func (c *Config) derivedTerms() []string {
 			}
 		}
 	}
-	for _, r := range c.Tenant.Repos {
+	for _, r := range c.repoValues() {
 		segs := strings.Split(strings.Trim(strings.TrimSuffix(strings.TrimSpace(r), ".git"), "/"), "/")
 		if len(segs) < 2 {
 			continue
 		}
 		if o := segs[len(segs)-2]; len(o) >= minDerivedTerm && !placeholderOwner(o) {
 			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// repoValues lists every repository named anywhere in the config.
+func (c *Config) repoValues() []string {
+	out := append([]string{}, c.Tenant.Repos...)
+	for _, r := range []string{c.Forge.Repo, c.Inlet.Repo} {
+		if r != "" {
+			out = append(out, r)
 		}
 	}
 	return out
@@ -360,9 +472,13 @@ func (c *Config) TenantTerms() []secretscan.Term {
 		}
 	}
 	add(secretscan.RuleTenantTerm, c.Tenant.OwnerEmails...)
-	add(secretscan.RuleTenantTerm, c.Tenant.Repos...)
+	add(secretscan.RuleTenantTerm, c.repoValues()...)
 	add(secretscan.RuleTenantTerm, c.derivedTerms()...)
 	add(secretscan.RuleTenantTerm, c.Store.Bucket)
+	// The identity provider's host names the operator as surely as a bucket does.
+	if u, err := url.Parse(c.Inlet.Issuer); err == nil && c.Inlet.Issuer != "" && u.Hostname() != "" && !placeholderDomain(u.Hostname()) {
+		add(secretscan.RuleTenantTerm, u.Hostname())
+	}
 	if c.Store.Endpoint != "" {
 		if u, err := url.Parse(c.Store.Endpoint); err == nil && u.Hostname() != "" {
 			add(secretscan.RuleTenantTerm, u.Hostname())

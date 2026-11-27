@@ -254,6 +254,54 @@ var commands = []*command{
 		Run:   runBench,
 	},
 	{
+		Path: []string{"land", "enqueue"}, Args: "<branch>", MinArgs: 1, MaxArgs: 1,
+		Summary: "queue a branch's head to land on the target",
+		Detail: []string{
+			"Pins the branch's current commit in the forge's landing queue (a ref under",
+			"refs/chimera/land/<target>/, created by compare-and-swap). FIFO. Queuing the",
+			"same commit twice is a no-op; a newer commit takes a new place at the back.",
+		},
+		Flags: []flagSpec{flagTarget, flagJSON},
+		Run:   runLandEnqueue,
+	},
+	{
+		Path: []string{"land", "status"}, Args: "[branch]", MaxArgs: 1,
+		Summary: "the queue, the epoch, and what landed or was evicted",
+		Detail: []string{
+			"Without a branch: target head, highest epoch, queued changes in order, and",
+			"recent outcomes. With a branch: exits 0 once it LANDED, 1 if it was EVICTED",
+			"(with the reason), 3 while it is still PENDING in the queue.",
+		},
+		Flags: []flagSpec{flagTarget, flagRepo, flagJSON},
+		Run:   runLandStatus,
+	},
+	{
+		Path: []string{"land", "run"}, Summary: "land queued changes, one at a time",
+		Detail: []string{
+			"Acquires the next epoch (land/<repo>/epoch-<n>, If-None-Match: *), then for",
+			"each queued change: rebase onto the target head, verify the rebased tree in a",
+			"lane, and push by compare-and-swap; a stale push starts over from the rebase.",
+			"A conflicting or failing change is evicted at once with the reason and the",
+			"next one proceeds. Trailers survive: squash writes the union of the sources'.",
+			"Exits 1 if any change was evicted or a higher epoch fenced this lander.",
+		},
+		Flags: []flagSpec{flagTarget, flagVerifier, flagSquash, flagOnce, flagRepo, flagJSON},
+		Run:   runLandRun,
+	},
+	{
+		Path: []string{"trail"}, Args: "<base>..<head>", MinArgs: 1, MaxArgs: 1,
+		Summary: "review a range by its evidence: risk, unmet intent, missing proof",
+		Detail: []string{
+			"Walks the commits' Chimera-Intent and Chimera-Capsule trailers, fetches and",
+			"verifies every capsule, and reports: risk class R0–R3 (Ring-0 paths are R3),",
+			"unmet intent and orphan proof (spec drift), commits without trailers (missing",
+			"proof), and every verdict. --html writes the static Trail page; --check prints",
+			"the forge check summary and exits 1 on FAIL, 3 on PENDING. No single score.",
+		},
+		Flags: []flagSpec{flagHTML, flagCheck, flagRepo, flagJSON},
+		Run:   runTrail,
+	},
+	{
 		Path: []string{"why"}, Args: "<file[:line]>", MinArgs: 1, MaxArgs: 1,
 		Summary: "git blame → trailers → capsule: intent, lane, verdicts",
 		Detail: []string{

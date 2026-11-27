@@ -701,3 +701,61 @@ func TestM1_4_LaneWithoutCapsuleCountsAsFailedCriterion(t *testing.T) {
 		t.Fatalf("%+v", cr)
 	}
 }
+
+// TestM1_4_FailingRowsNeverCarryBestWallTime: a cell that passed nothing
+// (0/K) is not "best" at wall time however fast it failed; weight 600 on
+// Wall p50/p90 goes only to cells with at least one all-pass lane.
+func TestM1_4_FailingRowsNeverCarryBestWallTime(t *testing.T) {
+	rep := &Report{Bench: "b", K: 2, Cells: []CellReport{
+		{Fixture: "f", Cell: "aaaa", K: 2, PassRate: 1, AllPass: 2, WallP50MS: 9000, WallP90MS: 9500},
+		{Fixture: "f", Cell: "bbbb", K: 2, PassRate: 0, AllPass: 0, WallP50MS: 10, WallP90MS: 20},
+		{Fixture: "f", Cell: "cccc", K: 2, PassRate: 0.5, AllPass: 1, WallP50MS: 12000, WallP90MS: 9500},
+		{Fixture: "g", Cell: "dddd", K: 2, PassRate: 0, AllPass: 0, WallP50MS: 5, WallP90MS: 6},
+	}}
+	page, err := RenderPage(rep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(page)
+	for _, want := range []string{
+		// Passing and fastest among the passing: best on every column it wins.
+		`<td class="num best">1.00</td><td class="num best">2/2</td><td class="num best">9.00s</td><td class="num best">9.50s</td>`,
+		// 0/K and fastest overall: no weight on wall time.
+		`<td class="num">0.00</td><td class="num">0/2</td><td class="num">0.01s</td><td class="num">0.02s</td>`,
+		// Ties on p90 with the best passing cell: both are best there.
+		`<td class="num">0.50</td><td class="num">1/2</td><td class="num">12.00s</td><td class="num best">9.50s</td>`,
+		// A fixture whose only cell failed everything: wall cells stay plain.
+		`<td class="num best">0/2</td><td class="num">0.01s</td><td class="num">0.01s</td>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+}
+
+// TestM2_2_VerifyOnlyLaneJudgesTheTreeWithoutAHarness: the lane Land uses
+// runs the verifier alone and still seals a Capsule.
+func TestM2_2_VerifyOnlyLaneJudgesTheTreeWithoutAHarness(t *testing.T) {
+	dir, base := fixture(t)
+	deps, _ := testDeps(t)
+	c := cell(dir, base, "", Command{})
+	c.VerifyOnly = true
+	rep := mustRun(t, Plan{K: 1, Cells: []Cell{c}}, deps)
+	l := rep.Cells[0].Lanes[0]
+	if l.Capsule == "" || len(l.Verdicts) == 0 {
+		t.Fatalf("%+v", l)
+	}
+	for _, v := range l.Verdicts {
+		if v.ID == "harness" {
+			t.Fatalf("a verify-only lane judged a harness: %+v", v)
+		}
+	}
+	for _, e := range l.Transcript {
+		if e.Step == "harness" {
+			t.Fatalf("a verify-only lane ran a harness step: %+v", e)
+		}
+	}
+	if len(l.Diff) != 0 {
+		t.Fatalf("verify-only lane changed the tree:\n%s", l.Diff)
+	}
+}

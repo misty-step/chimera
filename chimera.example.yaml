@@ -22,3 +22,27 @@ lanes:
   default: { model: example-model, harness: example-agent, effort: high, context_policy: push, runner: local }
 prices:
   example-model: { input_per_mtok: 1.00, output_per_mtok: 4.00 }
+risk:
+  r2: ["pkg/objstore/**", "go.mod"]
+  r3: ["migrations/**"]
+forge:
+  kind: github                # github, or git for a repository on this machine (forge.dir)
+  repo: acme/widget           # the token comes from CHIMERA_FORGE_TOKEN, never from this file
+land:
+  target: main
+  verifier: default
+  strategy: rebase            # or squash; both keep the union of the source commits' trailers
+inlet:
+  repo: acme/widget
+  issuer: https://id.example.com
+  audience: chimera-inlet
+  jwks_url: https://id.example.com/.well-known/jwks.json
+  token_header: X-Edge-Jwt    # header the edge sets after verifying the session
+  debounce: 10m
+  daily_cap: 20
+  preview_origins: ["https://*.preview.example.com"]
+  bot_actors: ["bot@example.com"]
+  triage_per_minute: 6
+  folio_branch: chimera/folio
+  target: main
+  classifier: { command: ["example-classifier"], timeout: 60s }
