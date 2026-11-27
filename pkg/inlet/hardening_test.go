@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"chimera/pkg/capsule"
+	"chimera/pkg/config"
 	"chimera/pkg/forge"
 	"chimera/pkg/gitx"
 	"chimera/pkg/objstore"
@@ -646,3 +647,47 @@ func (c *countingBody) Read(p []byte) (int, error) {
 }
 
 func (c *countingBody) Close() error { return nil }
+
+// TestM2_3_TenantGateDoesNotRefuseAReconcileOrderForNamingItsOwnRepo: a host
+// wires the tenant-term gate, and the tenant's repository name is one of its
+// terms. A task manifest must name that repository; only the rest of it is
+// scanned, so a reconcile order still becomes a task Intent, while the same
+// term in the owner's words is still refused.
+func TestM2_3_TenantGateDoesNotRefuseAReconcileOrderForNamingItsOwnRepo(t *testing.T) {
+	gate := secretscan.New([]secretscan.Term{{Value: testRepo, Rule: secretscan.RuleTenantTerm}})
+	f := newFixture(t, func(_ *Options, d *Deps) { d.Gate = gate })
+	f.classifier.decide = func(n Nit) (Decision, error) {
+		return Decision{Kind: KindViolation, Clause: "DESIGN.md §2.2", Brief: n.Text, Summary: "s"}, nil
+	}
+	r := f.owner(nitText("The FAIL colour is below the documented contrast."))
+	if r.Code != http.StatusCreated || r.Status != StatusTask || !capsule.ValidIntent(r.Intent) {
+		t.Fatalf("%+v", r)
+	}
+	m, err := capsule.GetTask(context.Background(), f.store, r.Intent)
+	if err != nil || m.Repo != testRepo || m.Clause != "DESIGN.md §2.2" {
+		t.Fatalf("%+v %v", m, err)
+	}
+	if r := f.owner(nitText("This page should link to " + testRepo + " on the forge.")); r.Status != StatusTriage || r.Reason != "secret-gate" {
+		t.Fatalf("tenant term in the brief: %+v", r)
+	}
+	if f.pushes() != 0 {
+		t.Fatal("a reconcile order pushed to the forge")
+	}
+}
+
+// TestM2_3_ExampleConfigConfiguresAnInlet: the committed example loads and
+// maps to handler options — placeholders only, nothing missing.
+func TestM2_3_ExampleConfigConfiguresAnInlet(t *testing.T) {
+	cfg, err := config.Load(config.Options{File: filepath.Join("..", "..", "chimera.example.yaml")}, func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	o, err := OptionsFromConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Repo != "acme/widget" || o.Issuer != "https://id.example.com" || o.Audience == "" || o.Debounce != 10*time.Minute || o.DailyCap != 20 ||
+		o.FolioBranch != "chimera/folio" || o.Target != "main" || o.EmailVerified != "required" || o.ClientIPHeader == "" || len(o.OwnerEmails) != 1 {
+		t.Fatalf("%+v", o)
+	}
+}

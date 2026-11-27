@@ -795,8 +795,12 @@ func (h *Handler) owner(w http.ResponseWriter, r *http.Request, raw []byte, id I
 			Clause: strings.TrimSpace(decision.Clause), Acceptance: decision.Acceptance,
 		}
 		// A task Intent is evidence like any other: nothing secret-shaped
-		// goes into the store behind a content address.
-		if len(h.gate.Scan("task.yaml", manifest.Bytes())) > 0 {
+		// goes into the store behind a content address. The manifest's own
+		// repo field is its address, not a leak — a Capsule's capsule.json is
+		// gated the same way — so every byte but that value is scanned.
+		scanned := manifest
+		scanned.Repo = ""
+		if len(h.gate.Scan("task.yaml", scanned.Bytes())) > 0 {
 			fail("secret-gate", decision)
 			return
 		}

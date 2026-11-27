@@ -38,6 +38,8 @@ inlet:
   audience: chimera-inlet
   jwks_url: https://id.example.com/.well-known/jwks.json
   token_header: X-Edge-Jwt    # header the edge sets after verifying the session
+  email_verified: required    # or if-present, for edges whose tokens carry no email_verified claim
+  client_ip_header: X-Edge-Client-IP   # header the edge sets; keys the triage rate limit
   debounce: 10m
   daily_cap: 20
   preview_origins: ["https://*.preview.example.com"]

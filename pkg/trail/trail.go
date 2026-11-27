@@ -245,7 +245,13 @@ type intentInfo struct {
 	problem  string // "" when the Intent is the current one and readable
 }
 
-var transcriptRefRE = regexp.MustCompile(`^transcript:([0-9]+)$`)
+// transcriptRefRE is evidence that is exactly a transcript line;
+// transcriptMentionRE finds the first such reference inside longer evidence
+// ("transcript:4 and proof/shot.png").
+var (
+	transcriptRefRE     = regexp.MustCompile(`^transcript:([0-9]+)$`)
+	transcriptMentionRE = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])transcript:([0-9]+)(?:[^0-9]|$)`)
+)
 
 // maxPageLines bounds a drill-down: a longer transcript keeps its last
 // tailLines lines plus every line a row links to.
@@ -955,7 +961,7 @@ func newLoaded(addr string, local *capsule.Local) *loaded {
 // the line its evidence names, else the verdict event recorded for it, else
 // the Capsule.
 func verdictSource(l *loaded, v capsule.Verdict) Source {
-	if m := transcriptRefRE.FindStringSubmatch(v.Evidence); m != nil {
+	if m := transcriptMentionRE.FindStringSubmatch(v.Evidence); m != nil {
 		if n, err := strconv.Atoi(m[1]); err == nil && l.hasLine(n) {
 			l.keep[n] = true
 			return Source{Capsule: l.addr, Line: n}

@@ -806,3 +806,20 @@ func TestM2_1_MediaDimensionsComeFromTheFileHeader(t *testing.T) {
 		}
 	}
 }
+
+// TestM2_1_EvidenceThatMentionsATranscriptLineLinksToIt: evidence may name a
+// transcript line alongside a proof file; the verdict still lands on the line.
+func TestM2_1_EvidenceThatMentionsATranscriptLineLinksToIt(t *testing.T) {
+	for evidence, want := range map[string]string{
+		"transcript:4": "4", "transcript:4 and proof/shot.png": "4", "see transcript:12, then proof/a.mp4": "12",
+		"mytranscript:4": "", "transcript:x": "", "proof/transcript:9.png": "9",
+	} {
+		got := ""
+		if m := transcriptMentionRE.FindStringSubmatch(evidence); m != nil {
+			got = m[1]
+		}
+		if got != want {
+			t.Errorf("%q: line %q, want %q", evidence, got, want)
+		}
+	}
+}

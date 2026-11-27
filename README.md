@@ -4,9 +4,10 @@ Intent-driven runtime for autonomous coding agents. Every change starts from an 
 **Lane**, and leaves an immutable **Capsule** of evidence that Git commits point to by trailer. The same engine
 runs production work (`K=1`) and replay evaluations (`K=n`).
 
-> **Status:** Milestone 1 (evidence core) is implemented: `[M1-1]` CLI skeleton, tenant-leak lint, Ring-0 lock;
-> `[M1-2]` Capsules and `why`; `[M1-3]` the Ledger and pre-flight; `[M1-4]` `run` and `bench`. Milestone 2
-> (Trail, Land, Inlet) is not started. The Go implementation is compiled from the Active Folio below.
+> **Status:** Milestones 1 and 2 are implemented. M1 (evidence core): `[M1-1]` CLI skeleton, tenant-leak lint,
+> Ring-0 lock; `[M1-2]` Capsules and `why`; `[M1-3]` the Ledger and pre-flight; `[M1-4]` `run` and `bench`.
+> M2 (review, landing, feedback): `[M2-1]` Trail; `[M2-2]` the Forge interface and the Land MergeTrain;
+> `[M2-3]` the Inlet handler and `<chimera-nit>`. The Go implementation is compiled from the Active Folio below.
 >
 > ```sh
 > go build -o chimera ./cmd/chimera && ./chimera --help
@@ -51,6 +52,35 @@ chimera preflight pkg/capsule --failure "…"       # at most 2048 bytes of scen
 chimera run --intent folio --lane default         # one lane (K=1) → Capsule; --apply commits with trailers
 chimera bench --matrix bench.yaml -K 5 --html out # pass rate, x/K, wall p50/p90, cost per cell
 ```
+
+## CLI (Milestone 2)
+
+```sh
+chimera trail main..HEAD                          # risk class, unmet intent, missing proof, every verdict
+chimera trail main..HEAD --check                  # forge check summary: exit 0 PASS, 1 FAIL, 3 PENDING
+chimera trail main..HEAD --html out               # static Trail page: no script, strict CSP, capsule media
+
+chimera land enqueue agent/fix                    # pin the branch head in the queue (a ref, by compare-and-swap)
+chimera land status agent/fix                     # exit 0 LANDED, 1 EVICTED (with the reason), 3 PENDING
+chimera land run                                  # epoch fence → rebase → verify the rebased tree → CAS push
+```
+
+**Trail** walks `Chimera-Intent` / `Chimera-Capsule` trailers, fetches and verifies every Capsule, and reports
+what needs a reader: open risk (`R0`–`R3`; Ring-0 paths are always `R3`), unmet intent and orphan proof (spec
+drift against the acceptance IDs the Intent declares), commits without proof, and every verdict — never one score.
+
+**Land** keeps its queue on the forge as refs (`refs/chimera/land/<target>/<seq>/<branch>`), so the five-method
+`Forge` interface is the whole forge surface: enqueue and dequeue are `Push`es. Adapters: `github` (REST,
+`net/http` only), `git` (a repository on this machine: `forge.kind: git`, `forge.dir`), and an in-memory fake
+for tests. The epoch fence (`land/<repo>/epoch-<n>`) and the record of what landed or was evicted live in the
+object store. A change touching Ring-0 lands only when its commits are signed by an owner.
+
+**Inlet** is `pkg/inlet`: an `http.Handler` for `POST /v1/inlet/nit`, configured by the `inlet:` block
+(`inlet.OptionsFromConfig`). The binary does not mount it — `DESIGN.md` §1.1 has no `inlet` noun — so a host
+serves it behind the edge that verifies sessions. Owners' nits become a `task` Intent (a Folio violation) or
+join the one Folio-only branch (`chimera/folio`: debounce, daily cap, path fence, loop guard, both trailers);
+everyone else is appended to a rate-limited triage inbox. [`web/chimera-nit`](web/chimera-nit/) is the
+dependency-free `<chimera-nit>` element.
 
 Every read command takes `--json` and emits one object with a `schema` field. Exit codes are `0` ok, `1` error
 or refused gate, `2` usage, `3` pending. `capsule write|read|verify` and `ledger status|dump` are shorthands over
