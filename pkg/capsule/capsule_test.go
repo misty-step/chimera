@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -291,9 +292,17 @@ func TestM1_2_SecretInTranscriptAbortsBeforeAnyRequest(t *testing.T) {
 	ctx := context.Background()
 	token := "ghp_" + randHex(t, 18) // forge-token shape, generated per run
 	files := sampleFiles()
-	files[MemberTranscript] = Zstd([]byte(`{"event":"harness","line":"export GH=` + token + `"}` + "\n"))
+	// A realistic transcript: enough lines that zstd entropy-codes the
+	// literals, so the token is not in the stored bytes and only a gate that
+	// decompresses can find it.
+	var transcript strings.Builder
+	for i := 1; i <= 300; i++ {
+		fmt.Fprintf(&transcript, `{"event":"output","line":"ordinary line %d"}`+"\n", i)
+	}
+	transcript.WriteString(`{"event":"harness","line":"export GH=` + token + `"}` + "\n")
+	files[MemberTranscript] = Zstd([]byte(transcript.String()))
 	if bytes.Contains(files[MemberTranscript], []byte(token)) {
-		t.Skip("token survived compression verbatim; the test would not prove decoding")
+		t.Fatal("fixture is wrong: the token is in the compressed bytes verbatim, so this would not prove decoding")
 	}
 	dir := writeDir(t, files, []string{MemberTranscript, MemberDiff, MemberVerdicts, "proof/verifier.log"})
 	if _, err := Pack(dir, sampleMeta()); err != nil {
@@ -306,7 +315,7 @@ func TestM1_2_SecretInTranscriptAbortsBeforeAnyRequest(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 	f := ge.Findings[0]
-	if f.Path != MemberTranscript || f.Rule != secretscan.RuleForgeToken || f.Line != 1 || f.Col == 0 {
+	if f.Path != MemberTranscript || f.Rule != secretscan.RuleForgeToken || f.Line != 301 || f.Col != 38 {
 		t.Fatalf("%+v", f)
 	}
 	if fake.Requests() != 0 {
